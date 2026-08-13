@@ -42,6 +42,7 @@ import com.beeregg2001.komorebi.viewmodel.*
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.data.model.AudioMode
 import com.beeregg2001.komorebi.data.model.Channel
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.model.StreamSource
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -172,8 +173,13 @@ fun LivePlayerScreen(
 
     val availableQualities by livePlayerViewModel.availableQualities.collectAsState(initial = StreamQuality.DEFAULT_QUALITIES)
     val isQualitiesLoaded by livePlayerViewModel.isQualitiesLoaded.collectAsState()
+    val availableEncodings by livePlayerViewModel.availableEncodings.collectAsState(initial = StreamEncoding.DEFAULT_ENCODINGS)
+    val isEncodingsLoaded by livePlayerViewModel.isEncodingsLoaded.collectAsState()
 
     val currentLiveQualityStr by settingsViewModel.liveQuality.collectAsState()
+    val currentLiveEncodingStr by settingsViewModel.liveEncoding.collectAsState()
+    val currentEncodingForPlayback =
+        ps.currentEncoding.takeIf { ps.currentStreamSource == StreamSource.KONOMITV }
 
     LaunchedEffect(mainError, mainStatus, mainDetail, mainSignal) {
         ps.playerError = mainError
@@ -214,6 +220,23 @@ fun LivePlayerScreen(
                 val fallback = availableQualities.first()
                 ps.currentQuality = fallback
                 livePlayerViewModel.saveLiveQuality(fallback.value)
+            }
+        }
+    }
+
+    LaunchedEffect(availableEncodings, isEncodingsLoaded, currentLiveEncodingStr) {
+        if (isEncodingsLoaded && availableEncodings.isNotEmpty()) {
+            val matched = availableEncodings.find { it.value == currentLiveEncodingStr }
+            if (matched != null) {
+                ps.currentEncoding = matched
+            } else {
+                Log.w(
+                    TAG,
+                    "User's liveEncoding ($currentLiveEncodingStr) is not in the list. Falling back to default."
+                )
+                val fallback = availableEncodings.first()
+                ps.currentEncoding = fallback
+                livePlayerViewModel.saveLiveEncoding(fallback.value)
             }
         }
     }
@@ -302,15 +325,23 @@ fun LivePlayerScreen(
         ps.isEdcbDirect,
         ps.retryKey,
         ps.currentQuality,
+        currentEncodingForPlayback,
         isSourceInitialized,
-        isQualitiesLoaded
+        isQualitiesLoaded,
+        isEncodingsLoaded
     ) {
         if (!isSourceInitialized || !isQualitiesLoaded) return@LaunchedEffect
+        if (ps.currentStreamSource == StreamSource.KONOMITV && !isEncodingsLoaded) return@LaunchedEffect
         if (currentChannelItem.displayChannelId.isBlank() || currentChannelItem.displayChannelId == "null") return@LaunchedEffect
 
         if (ps.currentQuality.value.isBlank()) return@LaunchedEffect
 
         if (availableQualities.isNotEmpty() && availableQualities.none { it.value == ps.currentQuality.value }) {
+            return@LaunchedEffect
+        }
+        if (ps.currentStreamSource == StreamSource.KONOMITV &&
+            (currentEncodingForPlayback == null || currentEncodingForPlayback !in availableEncodings)
+        ) {
             return@LaunchedEffect
         }
 
@@ -331,10 +362,13 @@ fun LivePlayerScreen(
         ps.isDualDisplayMode,
         ps.retryKey,
         ps.currentQuality,
+        currentEncodingForPlayback,
         isSourceInitialized,
-        isQualitiesLoaded
+        isQualitiesLoaded,
+        isEncodingsLoaded
     ) {
         if (!isSourceInitialized || !isQualitiesLoaded) return@LaunchedEffect
+        if (ps.currentStreamSource == StreamSource.KONOMITV && !isEncodingsLoaded) return@LaunchedEffect
 
         val rightChannel = ps.dualRightChannel
         if (ps.isDualDisplayMode && rightChannel != null) {
@@ -342,6 +376,11 @@ fun LivePlayerScreen(
             if (ps.currentQuality.value.isBlank()) return@LaunchedEffect
 
             if (availableQualities.isNotEmpty() && availableQualities.none { it.value == ps.currentQuality.value }) {
+                return@LaunchedEffect
+            }
+            if (ps.currentStreamSource == StreamSource.KONOMITV &&
+                (currentEncodingForPlayback == null || currentEncodingForPlayback !in availableEncodings)
+            ) {
                 return@LaunchedEffect
             }
 
@@ -782,6 +821,7 @@ fun LivePlayerScreen(
                 availableSources = availableSources,
                 currentAudioMode = ps.currentAudioMode,
                 isSubtitleEnabled = isSubtitleEnabled,
+                currentEncoding = ps.currentEncoding,
                 currentQuality = ps.currentQuality,
                 isCommentEnabled = isCommentEnabled,
                 isLCropEnabled = ps.lCropEnabled,
@@ -838,6 +878,7 @@ fun LivePlayerScreen(
                         onShowToast("信号情報を表示します")
                     }
                 },
+                availableEncodings = availableEncodings,
                 availableQualities = availableQualities,
                 focusRequester = subMenuFocusRequester,
                 onSourceSelect = { source, isDirect ->
@@ -874,6 +915,17 @@ fun LivePlayerScreen(
                             if (subtitleEnabledState.value) AppStrings.STATE_SHOW else AppStrings.STATE_HIDE
                         )
                     )
+                },
+                onEncodingSelect = {
+                    if (ps.currentEncoding != it) {
+                        val encoding = it
+                        scope.launch {
+                            livePlayerViewModel.saveLiveEncoding(encoding.value)
+                            ps.currentEncoding = encoding
+                        }
+                        onShowToast(String.format(AppStrings.TOAST_ENCODING_CHANGED, it.label))
+                    }
+                    onSubMenuToggle(false)
                 },
                 onQualitySelect = {
                     if (ps.currentQuality != it) {

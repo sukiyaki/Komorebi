@@ -39,6 +39,7 @@ import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.data.model.ArchivedComment
 import com.beeregg2001.komorebi.data.model.AudioMode
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.ui.video.smb.SmbItem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -80,7 +81,10 @@ fun VideoPlayerScreen(
 
     val availableQualities by videoPlayerViewModel.availableQualities.collectAsState()
     val isQualitiesLoaded by videoPlayerViewModel.isQualitiesLoaded.collectAsState()
+    val availableEncodings by videoPlayerViewModel.availableEncodings.collectAsState()
+    val isEncodingsLoaded by videoPlayerViewModel.isEncodingsLoaded.collectAsState()
     val currentVideoQualityStr by settingsViewModel.videoQuality.collectAsState()
+    val currentVideoEncodingStr by settingsViewModel.videoEncoding.collectAsState()
 
     val playerUiMode by settingsViewModel.playerUiMode.collectAsState()
     val isModern = playerUiMode == "MODERN"
@@ -115,6 +119,23 @@ fun VideoPlayerScreen(
                 val fallback = availableQualities.first()
                 vs.currentQuality = fallback
                 videoPlayerViewModel.saveVideoQuality(fallback.value)
+            }
+        }
+    }
+
+    LaunchedEffect(availableEncodings, isEncodingsLoaded, currentVideoEncodingStr) {
+        if (isEncodingsLoaded && availableEncodings.isNotEmpty()) {
+            val matched = availableEncodings.find { it.value == currentVideoEncodingStr }
+            if (matched != null) {
+                vs.currentEncoding = matched
+            } else {
+                Log.w(
+                    TAG,
+                    "User's videoEncoding ($currentVideoEncodingStr) is not in the list. Falling back to default."
+                )
+                val fallback = availableEncodings.first()
+                vs.currentEncoding = fallback
+                videoPlayerViewModel.saveVideoEncoding(fallback.value)
             }
         }
     }
@@ -223,6 +244,20 @@ fun VideoPlayerScreen(
     val backendType by settingsViewModel.backendType.collectAsState()
     val edcbPlayMethod by settingsViewModel.edcbRecordPlayMethod.collectAsState()
     val isEdcbDirect = (backendType == "EDCB" && edcbPlayMethod == "DIRECT")
+    val isEncodingSupported = smbItem == null && backendType == "KONOMITV"
+    val currentEncodingForPlayback = vs.currentEncoding.takeIf { isEncodingSupported }
+
+    val onEncodingSelect: (StreamEncoding) -> Unit = { encoding ->
+        if (!isEncodingSupported) {
+            onShowToast("KonomiTV再生中のみエンコード方式を変更できます")
+        } else if (vs.currentEncoding != encoding) {
+            scope.launch {
+                videoPlayerViewModel.saveVideoEncoding(encoding.value)
+                vs.currentEncoding = encoding
+            }
+            onShowToast("エンコード方式を ${encoding.label} に変更しました")
+        }
+    }
 
     val getEffectivePositionMs = { vs.pendingSeekPositionMs ?: getCurrentPositionMs() }
 
@@ -323,7 +358,14 @@ fun VideoPlayerScreen(
 
     var isFirstLoad by remember { mutableStateOf(true) }
 
-    LaunchedEffect(currentProgram.id, smbItem, vs.currentQuality, availableQualities) {
+    LaunchedEffect(
+        currentProgram.id,
+        smbItem,
+        vs.currentQuality,
+        currentEncodingForPlayback,
+        availableQualities,
+        isQualitiesLoaded
+    ) {
         if (smbItem != null) {
             isBuffering = true
             vs.playbackOffsetMs = 0L
@@ -339,7 +381,11 @@ fun VideoPlayerScreen(
         }
 
         if (currentProgram.id == 0 || !isQualitiesLoaded || vs.currentQuality.value.isBlank()) return@LaunchedEffect
+        if (isEncodingSupported &&
+            (!isEncodingsLoaded || currentEncodingForPlayback == null || currentEncodingForPlayback.value.isBlank())
+        ) return@LaunchedEffect
         if (availableQualities.isNotEmpty() && availableQualities.none { it.value == vs.currentQuality.value }) return@LaunchedEffect
+        if (isEncodingSupported && currentEncodingForPlayback !in availableEncodings) return@LaunchedEffect
 
         isBuffering = true
         val offsetSec = if (isFirstLoad && initialPositionMs > 0) {
@@ -647,11 +693,14 @@ fun VideoPlayerScreen(
                     currentAudioMode = vs.currentAudioMode,
                     currentSpeed = vs.currentSpeed,
                     isSubtitleEnabled = vs.isSubtitleEnabled,
+                    currentEncoding = vs.currentEncoding,
                     currentQuality = vs.currentQuality,
                     isCommentEnabled = vs.isCommentEnabled,
                     isLCropEnabled = vs.lCropEnabled,
                     isAutoCmSkipEnabled = vs.isAutoCmSkipEnabled,
+                    availableEncodings = availableEncodings,
                     availableQualities = availableQualities,
+                    isEncodingSupported = isEncodingSupported,
                     onAudioToggle = {
                         // Stateを変更するだけ。実際の適用は VideoPlayerManager の LaunchedEffect が検知して行います。
                         vs.currentAudioMode =
@@ -667,6 +716,11 @@ fun VideoPlayerScreen(
                     onSubtitleToggle = {
                         vs.isSubtitleEnabled =
                             !vs.isSubtitleEnabled; onShowToast("字幕: ${if (vs.isSubtitleEnabled) "表示" else "非表示"}")
+                    },
+                    onEncodingSelect = {
+                        onEncodingSelect(it)
+                        isModernSettingsOpen = false
+                        vs.lastInteractionTime = System.currentTimeMillis()
                     },
                     onQualitySelect = {
                         if (smbItem != null) {
@@ -743,11 +797,14 @@ fun VideoPlayerScreen(
                     currentAudioMode = vs.currentAudioMode,
                     currentSpeed = vs.currentSpeed,
                     isSubtitleEnabled = vs.isSubtitleEnabled,
+                    currentEncoding = vs.currentEncoding,
                     currentQuality = vs.currentQuality,
                     isCommentEnabled = vs.isCommentEnabled,
                     isLCropEnabled = vs.lCropEnabled,
                     isAutoCmSkipEnabled = vs.isAutoCmSkipEnabled,
+                    availableEncodings = availableEncodings,
                     availableQualities = availableQualities,
+                    isEncodingSupported = isEncodingSupported,
                     focusRequester = subMenuFocusRequester,
                     onAudioToggle = {
                         // Stateを変更するだけ。実際の適用は VideoPlayerManager の LaunchedEffect が検知して行います。
@@ -764,6 +821,11 @@ fun VideoPlayerScreen(
                     onSubtitleToggle = {
                         vs.isSubtitleEnabled =
                             !vs.isSubtitleEnabled; onShowToast("字幕: ${if (vs.isSubtitleEnabled) "表示" else "非表示"}")
+                    },
+                    onEncodingSelect = {
+                        onEncodingSelect(it)
+                        onSubMenuToggle(false)
+                        vs.lastInteractionTime = System.currentTimeMillis()
                     },
                     onQualitySelect = {
                         if (smbItem != null) {

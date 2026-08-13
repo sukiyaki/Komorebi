@@ -108,7 +108,10 @@ class KonomiRepository @Inject constructor(
     @OptIn(UnstableApi::class)
     override suspend fun keepAlive(videoId: Int, quality: String, sessionId: String) {
         try {
-            val response = apiService.keepAlive(videoId, quality, sessionId)
+            val konomiTvQuality = StreamQuality.fromValue(quality).getKonomiTvValue(
+                StreamEncoding.fromValue(settingsRepository.videoEncoding.first())
+            )
+            val response = apiService.keepAlive(videoId, konomiTvQuality, sessionId)
             if (!response.isSuccessful) {
                 Log.w(TAG, "KeepAlive Failed: ${response.code()}")
             }
@@ -290,7 +293,10 @@ class KonomiRepository @Inject constructor(
     ): String {
         val ip = settingsRepository.konomiIp.first()
         val port = settingsRepository.konomiPort.first()
-        return UrlBuilder.getKonomiTvLiveStreamUrl(ip, port, channelId, quality)
+        val konomiTvQuality = StreamQuality.fromValue(quality).getKonomiTvValue(
+            StreamEncoding.fromValue(settingsRepository.liveEncoding.first())
+        )
+        return UrlBuilder.getKonomiTvLiveStreamUrl(ip, port, channelId, konomiTvQuality)
     }
 
     override suspend fun getChannelLogoUrl(channelId: String): String {
@@ -321,7 +327,10 @@ class KonomiRepository @Inject constructor(
     ): String {
         val ip = settingsRepository.konomiIp.first()
         val port = settingsRepository.konomiPort.first()
-        return UrlBuilder.getVideoPlaylistUrl(ip, port, videoId, sessionId, quality)
+        val konomiTvQuality = StreamQuality.fromValue(quality).getKonomiTvValue(
+            StreamEncoding.fromValue(settingsRepository.videoEncoding.first())
+        )
+        return UrlBuilder.getVideoPlaylistUrl(ip, port, videoId, sessionId, konomiTvQuality)
     }
 
     // ==========================================
