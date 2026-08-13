@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.model.AudioMode
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 
 enum class LCropMode { HIDDEN, MENU, DIRECT_ADJUST }
 enum class ZoomOrigin { TopLeft, TopRight, BottomLeft, BottomRight }
@@ -30,6 +31,7 @@ class VideoPlayerState {
     // 再生設定
     var currentAudioMode by mutableStateOf(AudioMode.MAIN)
     var currentSpeed by mutableFloatStateOf(1.0f)
+    var currentEncoding by mutableStateOf(StreamEncoding("読み込み中...", ""))
     var currentQuality by mutableStateOf(StreamQuality("", ""))
     var isSubtitleEnabled by mutableStateOf(false)
     var isCommentEnabled by mutableStateOf(false)

@@ -8,6 +8,7 @@ import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.ArchivedComment
 import com.beeregg2001.komorebi.data.model.CmSection
 import com.beeregg2001.komorebi.data.model.RecordedProgram
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.repository.RecordProvider
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
@@ -63,6 +64,12 @@ class VideoPlayerViewModel @Inject constructor(
 
     private val _isQualitiesLoaded = MutableStateFlow(false)
     val isQualitiesLoaded: StateFlow<Boolean> = _isQualitiesLoaded.asStateFlow()
+
+    private val _availableEncodings = MutableStateFlow(StreamEncoding.DEFAULT_ENCODINGS)
+    val availableEncodings: StateFlow<List<StreamEncoding>> = _availableEncodings.asStateFlow()
+
+    private val _isEncodingsLoaded = MutableStateFlow(true)
+    val isEncodingsLoaded: StateFlow<Boolean> = _isEncodingsLoaded.asStateFlow()
 
     private var detailFetchJob: Job? = null
     private var streamMaintenanceJob: Job? = null
@@ -164,6 +171,10 @@ class VideoPlayerViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.saveString(SettingsRepository.VIDEO_QUALITY, qualityValue)
         }
+    }
+
+    suspend fun saveVideoEncoding(encodingValue: String) {
+        settingsRepository.saveString(SettingsRepository.VIDEO_ENCODING, encodingValue)
     }
 
     suspend fun resolveStreamUrl(

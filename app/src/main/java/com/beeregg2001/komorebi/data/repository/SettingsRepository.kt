@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -40,7 +41,9 @@ class SettingsRepository @Inject constructor(
         val COMMENT_OPACITY = stringPreferencesKey("comment_opacity")
         val COMMENT_MAX_LINES = stringPreferencesKey("comment_max_lines")
         val COMMENT_DEFAULT_DISPLAY = stringPreferencesKey("comment_default_display")
+        val LIVE_ENCODING = stringPreferencesKey("live_encoding")
         val LIVE_QUALITY = stringPreferencesKey("live_quality")
+        val VIDEO_ENCODING = stringPreferencesKey("video_encoding")
         val VIDEO_QUALITY = stringPreferencesKey("video_quality")
         val LIVE_SUBTITLE_DEFAULT = stringPreferencesKey("live_subtitle_default")
         val VIDEO_SUBTITLE_DEFAULT = stringPreferencesKey("video_subtitle_default")
@@ -141,7 +144,13 @@ class SettingsRepository @Inject constructor(
     val commentMaxLines: Flow<String> = context.dataStore.data.map { it[COMMENT_MAX_LINES] ?: "0" }
     val commentDefaultDisplay: Flow<String> =
         context.dataStore.data.map { it[COMMENT_DEFAULT_DISPLAY] ?: "ON" }
+    val liveEncoding: Flow<String> = context.dataStore.data.map {
+        StreamEncoding.fromValue(it[LIVE_ENCODING] ?: StreamEncoding.DEFAULT_VALUE).value
+    }
     val liveQuality: Flow<String> = context.dataStore.data.map { it[LIVE_QUALITY] ?: "1080p-60fps" }
+    val videoEncoding: Flow<String> = context.dataStore.data.map {
+        StreamEncoding.fromValue(it[VIDEO_ENCODING] ?: StreamEncoding.DEFAULT_VALUE).value
+    }
     val videoQuality: Flow<String> =
         context.dataStore.data.map { it[VIDEO_QUALITY] ?: "1080p-60fps" }
     val liveSubtitleDefault: Flow<String> =

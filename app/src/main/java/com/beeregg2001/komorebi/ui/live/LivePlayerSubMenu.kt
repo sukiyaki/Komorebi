@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,13 +31,16 @@ import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.model.AudioMode
 import kotlinx.coroutines.delay
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.model.StreamSource
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 
 enum class LiveSubMenuCategory {
-    AUDIO, QUALITY, SOURCE
+    AUDIO, ENCODING, QUALITY, SOURCE
 }
+
+private fun StreamEncoding.subMenuLabel(): String = label.replace(" (", "\n(")
 
 @Composable
 fun LiveTopSubMenuUI(
@@ -46,6 +50,7 @@ fun LiveTopSubMenuUI(
     availableSources: List<StreamSource>,
     currentAudioMode: AudioMode,
     isSubtitleEnabled: Boolean,
+    currentEncoding: StreamEncoding,
     currentQuality: StreamQuality,
     isCommentEnabled: Boolean,
     isLCropEnabled: Boolean,
@@ -60,15 +65,18 @@ fun LiveTopSubMenuUI(
     onSourceSelect: (StreamSource, Boolean) -> Unit,
     onAudioToggle: () -> Unit,
     onSubtitleToggle: () -> Unit,
+    onEncodingSelect: (StreamEncoding) -> Unit,
     onQualitySelect: (StreamQuality) -> Unit,
     onCommentToggle: () -> Unit,
     onLCropToggle: () -> Unit,
     onCloseMenu: () -> Unit,
+    availableEncodings: List<StreamEncoding> = StreamEncoding.DEFAULT_ENCODINGS,
     availableQualities: List<StreamQuality> = StreamQuality.DEFAULT_QUALITIES
 ) {
     val colors = KomorebiTheme.colors
     var selectedCategory by remember { mutableStateOf<LiveSubMenuCategory?>(null) }
     val listFocusRequester = remember { FocusRequester() }
+    val mainEncodingButtonRequester = remember { FocusRequester() }
     val mainQualityButtonRequester = remember { FocusRequester() }
     val mainSourceButtonRequester = remember { FocusRequester() }
 
@@ -130,6 +138,7 @@ fun LiveTopSubMenuUI(
                 ) {
                     if (selectedCategory != null) {
                         val targetRequester = when (selectedCategory) {
+                            LiveSubMenuCategory.ENCODING -> mainEncodingButtonRequester
                             LiveSubMenuCategory.QUALITY -> mainQualityButtonRequester
                             LiveSubMenuCategory.SOURCE -> mainSourceButtonRequester
                             else -> focusRequester
@@ -197,6 +206,22 @@ fun LiveTopSubMenuUI(
                         subtitle = if (isSubtitleEnabled) "表示" else "非表示",
                         onClick = onSubtitleToggle,
                         modifier = Modifier.focusProperties { down = FocusRequester.Cancel },
+                        contentColor = colors.textPrimary
+                    )
+
+                    LiveMenuTileItem(
+                        title = "エンコード", icon = Icons.Default.Settings,
+                        subtitle = currentEncoding.subMenuLabel(),
+                        onClick = {
+                            selectedCategory =
+                                if (selectedCategory == LiveSubMenuCategory.ENCODING) null else LiveSubMenuCategory.ENCODING
+                        },
+                        modifier = Modifier
+                            .focusRequester(mainEncodingButtonRequester)
+                            .focusProperties {
+                                if (selectedCategory != LiveSubMenuCategory.ENCODING) down =
+                                    FocusRequester.Cancel
+                            },
                         contentColor = colors.textPrimary
                     )
 
@@ -276,6 +301,22 @@ fun LiveTopSubMenuUI(
                     )
 
                     LiveMenuTileItem(
+                        title = "エンコード", icon = Icons.Default.HighQuality,
+                        subtitle = currentEncoding.subMenuLabel(),
+                        onClick = {
+                            selectedCategory =
+                                if (selectedCategory == LiveSubMenuCategory.ENCODING) null else LiveSubMenuCategory.ENCODING
+                        },
+                        modifier = Modifier
+                            .focusRequester(mainEncodingButtonRequester)
+                            .focusProperties {
+                                if (selectedCategory != LiveSubMenuCategory.ENCODING) down =
+                                    FocusRequester.Cancel
+                            },
+                        contentColor = colors.textPrimary
+                    )
+
+                    LiveMenuTileItem(
                         title = "画質", icon = Icons.Default.HighQuality,
                         subtitle = effectiveQuality.label,
                         onClick = {
@@ -306,6 +347,60 @@ fun LiveTopSubMenuUI(
                             },
                         contentColor = colors.textPrimary
                     )
+                }
+            }
+
+            // --- 展開メニュー: エンコード方式 ---
+            AnimatedVisibility(
+                visible = selectedCategory == LiveSubMenuCategory.ENCODING,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(16.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(400.dp)
+                            .height(2.dp)
+                            .background(colors.textPrimary.copy(alpha = 0.2f))
+                    )
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 32.dp, vertical = 8.dp)
+                    ) {
+                        availableEncodings.forEach { encoding ->
+                            val isSelected = currentEncoding == encoding
+                            LiveMenuTileItem(
+                                title = encoding.subMenuLabel(),
+                                icon = if (isSelected) Icons.Default.CheckCircle else Icons.Default.Settings,
+                                subtitle = if (isSelected) "選択中" else "",
+                                onClick = {
+                                    onEncodingSelect(encoding)
+                                    selectedCategory = null
+                                    try {
+                                        mainEncodingButtonRequester.requestFocus()
+                                    } catch (e: Exception) {
+                                    }
+                                },
+                                width = 240.dp,
+                                height = 100.dp,
+                                modifier = Modifier
+                                    .then(
+                                        if (isSelected) Modifier.focusRequester(listFocusRequester) else Modifier
+                                    )
+                                    .focusProperties {
+                                        up = mainEncodingButtonRequester
+                                        down = FocusRequester.Cancel
+                                    },
+                                contentColor = colors.textPrimary
+                            )
+                        }
+                    }
                 }
             }
 
@@ -484,12 +579,18 @@ fun LiveMenuTileItem(
         ) {
             Icon(icon, null, modifier = Modifier.size(28.dp))
             Spacer(Modifier.height(8.dp))
-            Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Text(
+                title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                textAlign = if ('\n' in title) TextAlign.Center else TextAlign.Start
+            )
             if (subtitle.isNotEmpty()) {
                 Text(
                     subtitle,
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                    color = LocalContentColor.current.copy(0.7f)
+                    color = LocalContentColor.current.copy(0.7f),
+                    textAlign = if ('\n' in subtitle) TextAlign.Center else TextAlign.Start
                 )
             }
         }
