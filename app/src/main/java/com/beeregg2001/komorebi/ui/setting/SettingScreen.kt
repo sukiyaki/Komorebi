@@ -132,7 +132,9 @@ fun SettingsScreen(
                 FocusRequester(),
                 FocusRequester(),
                 FocusRequester(),
-                // ★ 追加: Cloudflare Zero Trust (Client ID / Secret) 用に2個増強
+                // Cloudflare Zero Trust と KonomiTV Basic 認証の入力項目
+                FocusRequester(),
+                FocusRequester(),
                 FocusRequester(),
                 FocusRequester()
             ), // 1: Connection
@@ -380,6 +382,8 @@ fun SettingsScreen(
                             prefs.epgStationPort,
                             prefs.konomiIp,
                             prefs.konomiPort,
+                            prefs.konomiBasicUsername,
+                            prefs.konomiBasicPassword,
                             prefs.mirakurunIp,
                             prefs.mirakurunPort,
                             prefs.preferredSource,
@@ -412,6 +416,8 @@ fun SettingsScreen(
                                 }
                             },
                             edcbPlayMethodR,
+                            itemFocusRequesters[1][10],
+                            itemFocusRequesters[1][11],
                             prefs.cfAccessClientId,
                             prefs.cfAccessClientSecret,
                             { t, v ->
@@ -440,6 +446,16 @@ fun SettingsScreen(
 
                                             "KonomiTV (ポート)" -> repository.saveString(
                                                 SettingsRepository.KONOMI_PORT,
+                                                sanitizedInput
+                                            )
+
+                                            AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME -> repository.saveString(
+                                                SettingsRepository.KONOMI_BASIC_USERNAME,
+                                                sanitizedInput
+                                            )
+
+                                            AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD -> repository.saveString(
+                                                SettingsRepository.KONOMI_BASIC_PASSWORD,
                                                 sanitizedInput
                                             )
 

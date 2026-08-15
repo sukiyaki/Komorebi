@@ -76,8 +76,8 @@ fun rememberManagedExoPlayer(
     onBufferingChanged: (Boolean) -> Unit,
     onDurationChanged: (Long) -> Unit = {},
     onStopOrDispose: (ExoPlayer) -> Unit,
-    // ★ 追加: Cloudflare Zero Trust サービストークン (未設定なら空Map)
-    cfAccessHeaders: Map<String, String> = emptyMap(),
+    // 接続先に設定された認証ヘッダー
+    requestHeaders: Map<String, String> = emptyMap(),
     onFatalError: (String) -> Unit = {},
     settingsViewModel: SettingsViewModel = hiltViewModel()
 ): ExoPlayer {
@@ -129,8 +129,8 @@ fun rememberManagedExoPlayer(
             setAllowCrossProtocolRedirects(true)
             setConnectTimeoutMs(90000)
             setReadTimeoutMs(90000)
-            // ★ 追加: Cloudflare Access ヘッダーを付与
-            setDefaultRequestProperties(cfAccessHeaders)
+            // 接続先に設定された認証ヘッダーを付与する
+            setDefaultRequestProperties(requestHeaders)
         }
 
         val nativeLib = NativeLib()
@@ -166,12 +166,12 @@ fun rememberManagedExoPlayer(
                     )
 
                     val source = if (isEdcbScheme || isDirectTs || isEdcbDirect) {
-                        // ★ 修正: ファイルサイズ格納用の参照とCloudflare Accessヘッダーを渡す
+                        // ファイルサイズ格納用の参照と接続先の認証ヘッダーを渡す
                         TsReadExDataSource(
                             nativeLib,
                             dynamicTsArgs,
                             fileSizeBytesRef,
-                            cfAccessHeaders
+                            requestHeaders
                         )
                     } else {
                         httpDataSourceFactory.createDataSource()

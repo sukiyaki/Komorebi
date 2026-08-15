@@ -214,6 +214,14 @@ object AppStrings {
     const val SETTINGS_INPUT_MIRAKURUN_ADDRESS = "Mirakurun IPアドレス"
     const val SETTINGS_INPUT_MIRAKURUN_PORT = "Mirakurun ポート番号"
 
+    // KonomiTV Basic 認証設定
+    const val SETTINGS_SECTION_KONOMITV_BASIC_AUTH = "KonomiTV Basic認証 (オプション)"
+    const val SETTINGS_ITEM_KONOMITV_BASIC_USERNAME = "ユーザ名"
+    const val SETTINGS_ITEM_KONOMITV_BASIC_PASSWORD = "パスワード"
+    const val SETTINGS_INPUT_KONOMITV_BASIC_USERNAME = "KonomiTV Basic認証 ユーザ名"
+    const val SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD = "KonomiTV Basic認証 パスワード"
+    const val SETTINGS_VALUE_SET = "設定済み"
+
     // Cloudflare Zero Trust 設定
     const val SETTINGS_SECTION_CLOUDFLARE = "Cloudflare Zero Trust (オプション)"
     const val SETTINGS_ITEM_CF_CLIENT_ID = "Access Client ID"

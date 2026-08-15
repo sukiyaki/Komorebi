@@ -172,6 +172,16 @@ class SettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         "7000"
     )
+    val konomiBasicUsername: StateFlow<String> = settingsRepository.konomiBasicUsername.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        ""
+    )
+    val konomiBasicPassword: StateFlow<String> = settingsRepository.konomiBasicPassword.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        ""
+    )
     val commentSpeed: StateFlow<String> = settingsRepository.commentSpeed.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),

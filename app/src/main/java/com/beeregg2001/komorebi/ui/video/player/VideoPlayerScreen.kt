@@ -127,11 +127,30 @@ fun VideoPlayerScreen(
     val subtitleCommentLayer by settingsViewModel.subtitleCommentLayer.collectAsState()
     val videoSubtitleDefaultStr by settingsViewModel.videoSubtitleDefault.collectAsState()
 
-    // ★ 追加: Cloudflare Zero Trust サービストークン (未設定なら空Map)
+    val backendType by settingsViewModel.backendType.collectAsState()
+
+    // KonomiTV では Cloudflare Access と Basic 認証のヘッダーを併用する
     val cfAccessClientId by settingsViewModel.cfAccessClientId.collectAsState()
     val cfAccessClientSecret by settingsViewModel.cfAccessClientSecret.collectAsState()
-    val cfAccessHeaders = remember(cfAccessClientId, cfAccessClientSecret) {
-        SettingsRepository.buildCfAccessHeaders(cfAccessClientId, cfAccessClientSecret)
+    val konomiBasicUsername by settingsViewModel.konomiBasicUsername.collectAsState()
+    val konomiBasicPassword by settingsViewModel.konomiBasicPassword.collectAsState()
+    val requestHeaders = remember(
+        backendType,
+        cfAccessClientId,
+        cfAccessClientSecret,
+        konomiBasicUsername,
+        konomiBasicPassword
+    ) {
+        if (backendType == "KONOMITV") {
+            SettingsRepository.buildKonomiTvRequestHeaders(
+                cfAccessClientId,
+                cfAccessClientSecret,
+                konomiBasicUsername,
+                konomiBasicPassword
+            )
+        } else {
+            SettingsRepository.buildCfAccessHeaders(cfAccessClientId, cfAccessClientSecret)
+        }
     }
 
     val commentSpeed = commentSpeedStr.toFloatOrNull() ?: 1.0f
@@ -209,7 +228,7 @@ fun VideoPlayerScreen(
                 videoPlayerViewModel.updateWatchHistory(program, posMs / 1000.0)
             }
         },
-        cfAccessHeaders = cfAccessHeaders,
+        requestHeaders = requestHeaders,
         onFatalError = { message ->
             onShowToast(message)
             onBackPressed()
@@ -220,7 +239,6 @@ fun VideoPlayerScreen(
         { if (isLiveStream) vs.playbackOffsetMs + exoPlayer.currentPosition else exoPlayer.currentPosition }
     }
 
-    val backendType by settingsViewModel.backendType.collectAsState()
     val edcbPlayMethod by settingsViewModel.edcbRecordPlayMethod.collectAsState()
     val isEdcbDirect = (backendType == "EDCB" && edcbPlayMethod == "DIRECT")
 
@@ -639,7 +657,7 @@ fun VideoPlayerScreen(
                     currentPositionMs = getEffectivePositionMs(),
                     onSeekRequested = { performSeek(it); isChapterListOpen = false },
                     onClose = { isChapterListOpen = false },
-                    requestHeaders = cfAccessHeaders)
+                    requestHeaders = requestHeaders)
             }
 
             AnimatedVisibility(visible = isModernSettingsOpen, enter = fadeIn(), exit = fadeOut()) {
