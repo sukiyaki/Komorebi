@@ -182,6 +182,13 @@ class SettingsViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         ""
     )
+    // null は DataStore の初回読み込み前、emptyMap は読み込み済み・認証設定なしを表す
+    val recordedPlaybackRequestHeaders: StateFlow<Map<String, String>?> =
+        settingsRepository.recordedPlaybackRequestHeaders.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            null
+        )
     val commentSpeed: StateFlow<String> = settingsRepository.commentSpeed.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),

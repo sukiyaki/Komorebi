@@ -158,6 +158,21 @@ class SettingsRepository @Inject constructor(
         context.dataStore.data.map { it[KONOMI_BASIC_USERNAME] ?: "" }
     val konomiBasicPassword: Flow<String> =
         context.dataStore.data.map { it[KONOMI_BASIC_PASSWORD] ?: "" }
+    val recordedPlaybackRequestHeaders: Flow<Map<String, String>?> =
+        context.dataStore.data.map { preferences ->
+            val cfAccessHeaders = buildCfAccessHeaders(
+                preferences[CF_ACCESS_CLIENT_ID] ?: "",
+                preferences[CF_ACCESS_CLIENT_SECRET] ?: ""
+            )
+            if ((preferences[BACKEND_TYPE] ?: "KONOMITV") == "KONOMITV") {
+                cfAccessHeaders + buildKonomiBasicAuthHeaders(
+                    preferences[KONOMI_BASIC_USERNAME] ?: "",
+                    preferences[KONOMI_BASIC_PASSWORD] ?: ""
+                )
+            } else {
+                cfAccessHeaders
+            }
+        }
     val mirakurunIp: Flow<String> = context.dataStore.data.map { it[MIRAKURUN_IP] ?: "" }
     val mirakurunPort: Flow<String> = context.dataStore.data.map { it[MIRAKURUN_PORT] ?: "40772" }
     val preferredStreamSource: Flow<String> =

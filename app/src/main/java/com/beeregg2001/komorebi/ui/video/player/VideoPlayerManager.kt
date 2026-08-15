@@ -118,7 +118,7 @@ fun rememberManagedExoPlayer(
         }
     }
 
-    val exoPlayer = remember {
+    val exoPlayer = remember(requestHeaders) {
         val renderersFactory = DefaultRenderersFactory(context).apply {
             setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             setEnableDecoderFallback(true)

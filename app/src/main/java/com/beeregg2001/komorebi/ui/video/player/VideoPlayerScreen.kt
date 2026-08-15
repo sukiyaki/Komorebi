@@ -32,7 +32,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.*
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
-import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.viewmodel.VideoPlayerViewModel
 import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
@@ -129,29 +128,10 @@ fun VideoPlayerScreen(
 
     val backendType by settingsViewModel.backendType.collectAsState()
 
-    // KonomiTV では Cloudflare Access と Basic 認証のヘッダーを併用する
-    val cfAccessClientId by settingsViewModel.cfAccessClientId.collectAsState()
-    val cfAccessClientSecret by settingsViewModel.cfAccessClientSecret.collectAsState()
-    val konomiBasicUsername by settingsViewModel.konomiBasicUsername.collectAsState()
-    val konomiBasicPassword by settingsViewModel.konomiBasicPassword.collectAsState()
-    val requestHeaders = remember(
-        backendType,
-        cfAccessClientId,
-        cfAccessClientSecret,
-        konomiBasicUsername,
-        konomiBasicPassword
-    ) {
-        if (backendType == "KONOMITV") {
-            SettingsRepository.buildKonomiTvRequestHeaders(
-                cfAccessClientId,
-                cfAccessClientSecret,
-                konomiBasicUsername,
-                konomiBasicPassword
-            )
-        } else {
-            SettingsRepository.buildCfAccessHeaders(cfAccessClientId, cfAccessClientSecret)
-        }
-    }
+    // null は認証設定の初回読み込み前。ネットワーク再生は読み込み完了まで開始しない。
+    val loadedRequestHeaders by settingsViewModel.recordedPlaybackRequestHeaders.collectAsState()
+    val requestHeaders = if (smbItem == null) loadedRequestHeaders.orEmpty() else emptyMap()
+    val isPlaybackConfigurationReady = smbItem != null || loadedRequestHeaders != null
 
     val commentSpeed = commentSpeedStr.toFloatOrNull() ?: 1.0f
     val commentFontSizeScale = commentFontSizeStr.toFloatOrNull() ?: 1.0f
@@ -247,7 +227,10 @@ fun VideoPlayerScreen(
     val totalDurationForControls =
         if (smbItem != null) smbDurationMs.coerceAtLeast(0L) else (currentProgram.recordedVideo.duration * 1000).toLong()
 
-    val performSeek: (Long) -> Unit = { targetMs: Long ->
+    val performSeek: (Long) -> Unit = performSeek@{ targetMs: Long ->
+        // 初回の認証設定読み込み中は、新しい HTTP リクエストを開始しない
+        if (!isPlaybackConfigurationReady) return@performSeek
+
         val safeTarget = targetMs.coerceIn(
             0L,
             if (totalDurationForControls > 0) totalDurationForControls else Long.MAX_VALUE
@@ -341,7 +324,16 @@ fun VideoPlayerScreen(
 
     var isFirstLoad by remember { mutableStateOf(true) }
 
-    LaunchedEffect(currentProgram.id, smbItem, vs.currentQuality, availableQualities) {
+    LaunchedEffect(
+        currentProgram.id,
+        smbItem,
+        vs.currentQuality,
+        availableQualities,
+        exoPlayer,
+        isPlaybackConfigurationReady
+    ) {
+        if (!isPlaybackConfigurationReady) return@LaunchedEffect
+
         if (smbItem != null) {
             isBuffering = true
             vs.playbackOffsetMs = 0L
