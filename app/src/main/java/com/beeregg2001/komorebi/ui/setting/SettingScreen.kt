@@ -423,6 +423,15 @@ fun SettingsScreen(
                             { t, v ->
                                 val isKonomiBasicPassword =
                                     t == AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD
+                                val isKonomiBasicAuth = isKonomiBasicPassword ||
+                                    t == AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME
+                                val basicAuthKey = when (t) {
+                                    AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME ->
+                                        SettingsRepository.KONOMI_BASIC_USERNAME
+                                    AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD ->
+                                        SettingsRepository.KONOMI_BASIC_PASSWORD
+                                    else -> null
+                                }
                                 uiState.activeDialog = SettingDialogState.Input(
                                     title = t,
                                     initialValue = if (isKonomiBasicPassword) "" else v,
@@ -433,7 +442,14 @@ fun SettingsScreen(
                                         AppStrings.SETTINGS_INPUT_CF_CLIENT_SECRET -> AppStrings.SETTINGS_PLACEHOLDER_CF_CLIENT_SECRET
                                         AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD -> AppStrings.SETTINGS_PLACEHOLDER_KONOMITV_BASIC_PASSWORD
                                         else -> null
-                                    }
+                                    },
+                                    onDelete = if (isKonomiBasicAuth && v.isNotEmpty() && basicAuthKey != null) {
+                                        {
+                                            scope.launch(Dispatchers.IO) {
+                                                repository.saveString(basicAuthKey, "")
+                                            }
+                                        }
+                                    } else null
                                 ) { input ->
                                     // 空欄での保存は、設定済みパスワードを変更しない。
                                     if (isKonomiBasicPassword && input.isEmpty()) return@Input
@@ -1106,6 +1122,9 @@ fun SettingsScreen(
                 isPassword = state.isPassword,
                 placeholder = state.placeholder,
                 onDismiss = { closeDialog() },
+                onDelete = state.onDelete?.let { delete ->
+                    { delete(); closeDialog() }
+                },
                 onConfirm = { state.onConfirm(it); closeDialog() })
 
             is SettingDialogState.BatchInput -> BatchInputDialog(

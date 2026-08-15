@@ -428,7 +428,7 @@ fun ConnectionSettingsContent(
                         onClick(konomiBasicPasswordR)
                         onEdit(
                             AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD,
-                            ""
+                            konomiBasicPassword
                         )
                     }
                 )

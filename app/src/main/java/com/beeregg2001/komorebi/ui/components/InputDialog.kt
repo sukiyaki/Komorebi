@@ -38,6 +38,7 @@ fun InputDialog(
     isLongToken: Boolean = false,
     isPassword: Boolean = false,
     placeholder: String? = null,
+    onDelete: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
@@ -161,6 +162,14 @@ fun InputDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    if (onDelete != null) {
+                        MonochromeButton(
+                            text = "削除",
+                            onClick = onDelete,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     // キャンセルボタン
                     MonochromeButton(
                         text = "キャンセル",
