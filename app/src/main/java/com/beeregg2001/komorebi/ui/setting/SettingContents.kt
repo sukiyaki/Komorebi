@@ -414,7 +414,7 @@ fun ConnectionSettingsContent(
                     value = if (konomiBasicPassword.isEmpty()) {
                         AppStrings.SETTINGS_VALUE_UNSET
                     } else {
-                        AppStrings.SETTINGS_VALUE_SET
+                        AppStrings.SETTINGS_VALUE_MASKED
                     },
                     icon = Icons.Default.Key,
                     modifier = Modifier
@@ -428,7 +428,7 @@ fun ConnectionSettingsContent(
                         onClick(konomiBasicPasswordR)
                         onEdit(
                             AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD,
-                            konomiBasicPassword
+                            ""
                         )
                     }
                 )

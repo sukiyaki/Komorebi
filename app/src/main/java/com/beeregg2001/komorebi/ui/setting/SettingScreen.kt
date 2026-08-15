@@ -421,16 +421,22 @@ fun SettingsScreen(
                             prefs.cfAccessClientId,
                             prefs.cfAccessClientSecret,
                             { t, v ->
+                                val isKonomiBasicPassword =
+                                    t == AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD
                                 uiState.activeDialog = SettingDialogState.Input(
                                     title = t,
-                                    initialValue = v,
+                                    initialValue = if (isKonomiBasicPassword) "" else v,
                                     isLongToken = t == AppStrings.SETTINGS_INPUT_CF_CLIENT_ID || t == AppStrings.SETTINGS_INPUT_CF_CLIENT_SECRET,
+                                    isPassword = isKonomiBasicPassword,
                                     placeholder = when (t) {
                                         AppStrings.SETTINGS_INPUT_CF_CLIENT_ID -> AppStrings.SETTINGS_PLACEHOLDER_CF_CLIENT_ID
                                         AppStrings.SETTINGS_INPUT_CF_CLIENT_SECRET -> AppStrings.SETTINGS_PLACEHOLDER_CF_CLIENT_SECRET
+                                        AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD -> AppStrings.SETTINGS_PLACEHOLDER_KONOMITV_BASIC_PASSWORD
                                         else -> null
                                     }
                                 ) { input ->
+                                    // 空欄での保存は、設定済みパスワードを変更しない。
+                                    if (isKonomiBasicPassword && input.isEmpty()) return@Input
                                     scope.launch(Dispatchers.IO) {
                                         // ★ 追加: CF Access のトークンには空白・改行は含まれ得ないため、
                                         // TV の画面キーボードが誤って挿入した改行等も除去する
@@ -1097,6 +1103,7 @@ fun SettingsScreen(
                 title = state.title,
                 initialValue = state.initialValue,
                 isLongToken = state.isLongToken,
+                isPassword = state.isPassword,
                 placeholder = state.placeholder,
                 onDismiss = { closeDialog() },
                 onConfirm = { state.onConfirm(it); closeDialog() })

@@ -220,7 +220,8 @@ object AppStrings {
     const val SETTINGS_ITEM_KONOMITV_BASIC_PASSWORD = "パスワード"
     const val SETTINGS_INPUT_KONOMITV_BASIC_USERNAME = "KonomiTV Basic認証 ユーザ名"
     const val SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD = "KonomiTV Basic認証 パスワード"
-    const val SETTINGS_VALUE_SET = "設定済み"
+    const val SETTINGS_PLACEHOLDER_KONOMITV_BASIC_PASSWORD = "変更するには新しいパスワードを入力"
+    const val SETTINGS_VALUE_MASKED = "********"
 
     // Cloudflare Zero Trust 設定
     const val SETTINGS_SECTION_CLOUDFLARE = "Cloudflare Zero Trust (オプション)"
