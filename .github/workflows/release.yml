@@ -55,6 +55,31 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Prepare fonts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p app/src/main/res/font
+
+          FONT_CSS="$(
+            curl -fsSL \
+              "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@100;300;400;500;600;700" \
+              -A "Mozilla/5.0"
+          )"
+
+          mapfile -t URLS < <(
+            echo "$FONT_CSS" |
+              grep -oP 'url\(\K[^)]+'
+          )
+
+          curl -fsSL "${URLS[0]}" -o app/src/main/res/font/notosansjp_thin.ttf
+          curl -fsSL "${URLS[1]}" -o app/src/main/res/font/notosansjp_light.ttf
+          curl -fsSL "${URLS[2]}" -o app/src/main/res/font/notosansjp_regular.ttf
+          curl -fsSL "${URLS[3]}" -o app/src/main/res/font/notosansjp_medium.ttf
+          curl -fsSL "${URLS[4]}" -o app/src/main/res/font/notosansjp_semibold.ttf
+          curl -fsSL "${URLS[5]}" -o app/src/main/res/font/notosansjp_bold.ttf
+
       - name: Build sukiyaki APK
         run: |
           chmod +x gradlew
@@ -66,15 +91,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK="$(
-            find app/build/outputs/apk \
-              -type f \
-              -name '*universal*.apk' \
-              | head -n 1
-          )"
+          APK="app/build/outputs/apk/sukiyaki/release/app-sukiyaki-release-unsigned.apk"
 
-          if [[ -z "$APK" ]]; then
-            echo "Universal APK not found"
+          if [[ ! -f "$APK" ]]; then
+            echo "Release APK not found: $APK"
+            find app/build/outputs/apk -type f -name '*.apk' -print || true
             exit 1
           fi
 
@@ -133,7 +154,7 @@ jobs:
 
       - name: Restore signing key
         env:
-          KEYSTORE_BASE64: ${{ secrets.SUKIYAKI_KEYSTORE_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.KOMOREBI_SUKIYAKI_KEYSTORE_BASE64 }}
         run: |
           printf '%s' "$KEYSTORE_BASE64" \
             | base64 --decode \
@@ -145,8 +166,8 @@ jobs:
           APK: ${{ steps.apk.outputs.apk }}
           BUILD_TOOLS: ${{ steps.apk.outputs.build_tools }}
           VERSION_NAME: ${{ steps.apk.outputs.version_name }}
-          KEYSTORE_PASSWORD: ${{ secrets.SUKIYAKI_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.SUKIYAKI_KEY_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KOMOREBI_SUKIYAKI_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KOMOREBI_SUKIYAKI_KEY_ALIAS }}
         shell: bash
         run: |
           set -euo pipefail
