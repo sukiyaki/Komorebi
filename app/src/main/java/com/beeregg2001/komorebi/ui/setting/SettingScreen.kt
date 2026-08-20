@@ -132,7 +132,9 @@ fun SettingsScreen(
                 FocusRequester(),
                 FocusRequester(),
                 FocusRequester(),
-                // ★ 追加: Cloudflare Zero Trust (Client ID / Secret) 用に2個増強
+                // Cloudflare Zero Trust と KonomiTV Basic 認証の入力項目
+                FocusRequester(),
+                FocusRequester(),
                 FocusRequester(),
                 FocusRequester()
             ), // 1: Connection
@@ -380,6 +382,8 @@ fun SettingsScreen(
                             prefs.epgStationPort,
                             prefs.konomiIp,
                             prefs.konomiPort,
+                            prefs.konomiBasicUsername,
+                            prefs.konomiBasicPassword,
                             prefs.mirakurunIp,
                             prefs.mirakurunPort,
                             prefs.preferredSource,
@@ -412,19 +416,43 @@ fun SettingsScreen(
                                 }
                             },
                             edcbPlayMethodR,
+                            itemFocusRequesters[1][10],
+                            itemFocusRequesters[1][11],
                             prefs.cfAccessClientId,
                             prefs.cfAccessClientSecret,
                             { t, v ->
+                                val isKonomiBasicPassword =
+                                    t == AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD
+                                val isKonomiBasicAuth = isKonomiBasicPassword ||
+                                    t == AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME
+                                val basicAuthKey = when (t) {
+                                    AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME ->
+                                        SettingsRepository.KONOMI_BASIC_USERNAME
+                                    AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD ->
+                                        SettingsRepository.KONOMI_BASIC_PASSWORD
+                                    else -> null
+                                }
                                 uiState.activeDialog = SettingDialogState.Input(
                                     title = t,
-                                    initialValue = v,
+                                    initialValue = if (isKonomiBasicPassword) "" else v,
                                     isLongToken = t == AppStrings.SETTINGS_INPUT_CF_CLIENT_ID || t == AppStrings.SETTINGS_INPUT_CF_CLIENT_SECRET,
+                                    isPassword = isKonomiBasicPassword,
                                     placeholder = when (t) {
                                         AppStrings.SETTINGS_INPUT_CF_CLIENT_ID -> AppStrings.SETTINGS_PLACEHOLDER_CF_CLIENT_ID
                                         AppStrings.SETTINGS_INPUT_CF_CLIENT_SECRET -> AppStrings.SETTINGS_PLACEHOLDER_CF_CLIENT_SECRET
+                                        AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD -> AppStrings.SETTINGS_PLACEHOLDER_KONOMITV_BASIC_PASSWORD
                                         else -> null
-                                    }
+                                    },
+                                    onDelete = if (isKonomiBasicAuth && v.isNotEmpty() && basicAuthKey != null) {
+                                        {
+                                            scope.launch(Dispatchers.IO) {
+                                                repository.saveString(basicAuthKey, "")
+                                            }
+                                        }
+                                    } else null
                                 ) { input ->
+                                    // 空欄での保存は、設定済みパスワードを変更しない。
+                                    if (isKonomiBasicPassword && input.isEmpty()) return@Input
                                     scope.launch(Dispatchers.IO) {
                                         // ★ 追加: CF Access のトークンには空白・改行は含まれ得ないため、
                                         // TV の画面キーボードが誤って挿入した改行等も除去する
@@ -440,6 +468,16 @@ fun SettingsScreen(
 
                                             "KonomiTV (ポート)" -> repository.saveString(
                                                 SettingsRepository.KONOMI_PORT,
+                                                sanitizedInput
+                                            )
+
+                                            AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME -> repository.saveString(
+                                                SettingsRepository.KONOMI_BASIC_USERNAME,
+                                                sanitizedInput
+                                            )
+
+                                            AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD -> repository.saveString(
+                                                SettingsRepository.KONOMI_BASIC_PASSWORD,
                                                 sanitizedInput
                                             )
 
@@ -1081,8 +1119,12 @@ fun SettingsScreen(
                 title = state.title,
                 initialValue = state.initialValue,
                 isLongToken = state.isLongToken,
+                isPassword = state.isPassword,
                 placeholder = state.placeholder,
                 onDismiss = { closeDialog() },
+                onDelete = state.onDelete?.let { delete ->
+                    { delete(); closeDialog() }
+                },
                 onConfirm = { state.onConfirm(it); closeDialog() })
 
             is SettingDialogState.BatchInput -> BatchInputDialog(

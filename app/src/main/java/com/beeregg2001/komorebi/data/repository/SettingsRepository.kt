@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import okhttp3.Credentials
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +33,8 @@ class SettingsRepository @Inject constructor(
 
         val KONOMI_IP = stringPreferencesKey("konomi_ip")
         val KONOMI_PORT = stringPreferencesKey("konomi_port")
+        val KONOMI_BASIC_USERNAME = stringPreferencesKey("konomi_basic_username")
+        val KONOMI_BASIC_PASSWORD = stringPreferencesKey("konomi_basic_password")
         val MIRAKURUN_IP = stringPreferencesKey("mirakurun_ip")
         val MIRAKURUN_PORT = stringPreferencesKey("mirakurun_port")
         val PREFERRED_STREAM_SOURCE = stringPreferencesKey("preferred_stream_source")
@@ -88,6 +91,7 @@ class SettingsRepository @Inject constructor(
 
         const val CF_ACCESS_CLIENT_ID_HEADER = "CF-Access-Client-Id"
         const val CF_ACCESS_CLIENT_SECRET_HEADER = "CF-Access-Client-Secret"
+        const val AUTHORIZATION_HEADER = "Authorization"
 
         // ★ 追加: トークン値からヘッダーMapを組み立てる (未設定なら空Map)
         // 保存済みの値に改行・空白が混入していても(過去の不具合や手動編集等で)
@@ -100,6 +104,26 @@ class SettingsRepository @Inject constructor(
                 CF_ACCESS_CLIENT_ID_HEADER to sanitizedId,
                 CF_ACCESS_CLIENT_SECRET_HEADER to sanitizedSecret
             )
+        }
+
+        // ユーザ名とパスワードが両方設定されている場合だけ Basic 認証ヘッダーを生成する
+        fun buildKonomiBasicAuthHeaders(
+            username: String,
+            password: String
+        ): Map<String, String> {
+            if (username.isEmpty() || password.isEmpty()) return emptyMap()
+            return mapOf(AUTHORIZATION_HEADER to Credentials.basic(username, password))
+        }
+
+        // KonomiTV では Cloudflare Access と Basic 認証を同じリクエストで併用できる
+        fun buildKonomiTvRequestHeaders(
+            clientId: String,
+            clientSecret: String,
+            username: String,
+            password: String
+        ): Map<String, String> {
+            return buildCfAccessHeaders(clientId, clientSecret) +
+                buildKonomiBasicAuthHeaders(username, password)
         }
     }
 
@@ -130,6 +154,25 @@ class SettingsRepository @Inject constructor(
     val konomiIp: Flow<String> =
         context.dataStore.data.map { it[KONOMI_IP] ?: "https://192-168-xxx-xxx.local.konomi.tv" }
     val konomiPort: Flow<String> = context.dataStore.data.map { it[KONOMI_PORT] ?: "7000" }
+    val konomiBasicUsername: Flow<String> =
+        context.dataStore.data.map { it[KONOMI_BASIC_USERNAME] ?: "" }
+    val konomiBasicPassword: Flow<String> =
+        context.dataStore.data.map { it[KONOMI_BASIC_PASSWORD] ?: "" }
+    val recordedPlaybackRequestHeaders: Flow<Map<String, String>?> =
+        context.dataStore.data.map { preferences ->
+            val cfAccessHeaders = buildCfAccessHeaders(
+                preferences[CF_ACCESS_CLIENT_ID] ?: "",
+                preferences[CF_ACCESS_CLIENT_SECRET] ?: ""
+            )
+            if ((preferences[BACKEND_TYPE] ?: "KONOMITV") == "KONOMITV") {
+                cfAccessHeaders + buildKonomiBasicAuthHeaders(
+                    preferences[KONOMI_BASIC_USERNAME] ?: "",
+                    preferences[KONOMI_BASIC_PASSWORD] ?: ""
+                )
+            } else {
+                cfAccessHeaders
+            }
+        }
     val mirakurunIp: Flow<String> = context.dataStore.data.map { it[MIRAKURUN_IP] ?: "" }
     val mirakurunPort: Flow<String> = context.dataStore.data.map { it[MIRAKURUN_PORT] ?: "40772" }
     val preferredStreamSource: Flow<String> =
@@ -265,6 +308,31 @@ class SettingsRepository @Inject constructor(
         return buildCfAccessHeaders(
             prefs[CF_ACCESS_CLIENT_ID] ?: "",
             prefs[CF_ACCESS_CLIENT_SECRET] ?: ""
+        )
+    }
+
+    suspend fun getKonomiBasicAuthHeaders(): Map<String, String> {
+        val prefs = context.dataStore.data.first()
+        return buildKonomiBasicAuthHeaders(
+            prefs[KONOMI_BASIC_USERNAME] ?: "",
+            prefs[KONOMI_BASIC_PASSWORD] ?: ""
+        )
+    }
+
+    suspend fun getRequestHeaders(
+        source: com.beeregg2001.komorebi.data.model.StreamSource
+    ): Map<String, String> {
+        val prefs = context.dataStore.data.first()
+        val cfAccessHeaders = buildCfAccessHeaders(
+            prefs[CF_ACCESS_CLIENT_ID] ?: "",
+            prefs[CF_ACCESS_CLIENT_SECRET] ?: ""
+        )
+        if (source != com.beeregg2001.komorebi.data.model.StreamSource.KONOMITV) {
+            return cfAccessHeaders
+        }
+        return cfAccessHeaders + buildKonomiBasicAuthHeaders(
+            prefs[KONOMI_BASIC_USERNAME] ?: "",
+            prefs[KONOMI_BASIC_PASSWORD] ?: ""
         )
     }
 

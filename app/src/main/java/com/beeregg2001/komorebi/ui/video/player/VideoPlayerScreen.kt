@@ -32,7 +32,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.*
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
-import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.viewmodel.VideoPlayerViewModel
 import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
@@ -127,12 +126,12 @@ fun VideoPlayerScreen(
     val subtitleCommentLayer by settingsViewModel.subtitleCommentLayer.collectAsState()
     val videoSubtitleDefaultStr by settingsViewModel.videoSubtitleDefault.collectAsState()
 
-    // ★ 追加: Cloudflare Zero Trust サービストークン (未設定なら空Map)
-    val cfAccessClientId by settingsViewModel.cfAccessClientId.collectAsState()
-    val cfAccessClientSecret by settingsViewModel.cfAccessClientSecret.collectAsState()
-    val cfAccessHeaders = remember(cfAccessClientId, cfAccessClientSecret) {
-        SettingsRepository.buildCfAccessHeaders(cfAccessClientId, cfAccessClientSecret)
-    }
+    val backendType by settingsViewModel.backendType.collectAsState()
+
+    // null は認証設定の初回読み込み前。ネットワーク再生は読み込み完了まで開始しない。
+    val loadedRequestHeaders by settingsViewModel.recordedPlaybackRequestHeaders.collectAsState()
+    val requestHeaders = if (smbItem == null) loadedRequestHeaders.orEmpty() else emptyMap()
+    val isPlaybackConfigurationReady = smbItem != null || loadedRequestHeaders != null
 
     val commentSpeed = commentSpeedStr.toFloatOrNull() ?: 1.0f
     val commentFontSizeScale = commentFontSizeStr.toFloatOrNull() ?: 1.0f
@@ -209,7 +208,7 @@ fun VideoPlayerScreen(
                 videoPlayerViewModel.updateWatchHistory(program, posMs / 1000.0)
             }
         },
-        cfAccessHeaders = cfAccessHeaders,
+        requestHeaders = requestHeaders,
         onFatalError = { message ->
             onShowToast(message)
             onBackPressed()
@@ -220,7 +219,6 @@ fun VideoPlayerScreen(
         { if (isLiveStream) vs.playbackOffsetMs + exoPlayer.currentPosition else exoPlayer.currentPosition }
     }
 
-    val backendType by settingsViewModel.backendType.collectAsState()
     val edcbPlayMethod by settingsViewModel.edcbRecordPlayMethod.collectAsState()
     val isEdcbDirect = (backendType == "EDCB" && edcbPlayMethod == "DIRECT")
 
@@ -229,7 +227,10 @@ fun VideoPlayerScreen(
     val totalDurationForControls =
         if (smbItem != null) smbDurationMs.coerceAtLeast(0L) else (currentProgram.recordedVideo.duration * 1000).toLong()
 
-    val performSeek: (Long) -> Unit = { targetMs: Long ->
+    val performSeek: (Long) -> Unit = performSeek@{ targetMs: Long ->
+        // 初回の認証設定読み込み中は、新しい HTTP リクエストを開始しない
+        if (!isPlaybackConfigurationReady) return@performSeek
+
         val safeTarget = targetMs.coerceIn(
             0L,
             if (totalDurationForControls > 0) totalDurationForControls else Long.MAX_VALUE
@@ -323,7 +324,16 @@ fun VideoPlayerScreen(
 
     var isFirstLoad by remember { mutableStateOf(true) }
 
-    LaunchedEffect(currentProgram.id, smbItem, vs.currentQuality, availableQualities) {
+    LaunchedEffect(
+        currentProgram.id,
+        smbItem,
+        vs.currentQuality,
+        availableQualities,
+        exoPlayer,
+        isPlaybackConfigurationReady
+    ) {
+        if (!isPlaybackConfigurationReady) return@LaunchedEffect
+
         if (smbItem != null) {
             isBuffering = true
             vs.playbackOffsetMs = 0L
@@ -639,7 +649,7 @@ fun VideoPlayerScreen(
                     currentPositionMs = getEffectivePositionMs(),
                     onSeekRequested = { performSeek(it); isChapterListOpen = false },
                     onClose = { isChapterListOpen = false },
-                    requestHeaders = cfAccessHeaders)
+                    requestHeaders = requestHeaders)
             }
 
             AnimatedVisibility(visible = isModernSettingsOpen, enter = fadeIn(), exit = fadeOut()) {
