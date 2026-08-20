@@ -91,7 +91,49 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK="app/build/outputs/apk/sukiyaki/release/app-sukiyaki-release-unsigned.apk"
+          echo "Generated APKs:"
+          find app/build/outputs/apk -type f -name '*.apk' -print
+
+          # ABI split が有効な場合は Universal APK を優先する
+          mapfile -t UNIVERSAL_APKS < <(
+            find app/build/outputs/apk \
+              -type f \
+              -iname '*universal*.apk' \
+              -print
+          )
+
+          if [[ "${#UNIVERSAL_APKS[@]}" -eq 1 ]]; then
+            APK="${UNIVERSAL_APKS[0]}"
+
+          elif [[ "${#UNIVERSAL_APKS[@]}" -gt 1 ]]; then
+            echo "Multiple Universal APKs found:"
+            printf '  %s\n' "${UNIVERSAL_APKS[@]}"
+            exit 1
+
+          else
+            # Universal APK がない場合のみ、release APK を候補とする
+            mapfile -t RELEASE_APKS < <(
+              find app/build/outputs/apk \
+                -type f \
+                -iname '*release*.apk' \
+                -print
+            )
+
+            if [[ "${#RELEASE_APKS[@]}" -eq 1 ]]; then
+              APK="${RELEASE_APKS[0]}"
+
+            elif [[ "${#RELEASE_APKS[@]}" -eq 0 ]]; then
+              echo "Release APK not found"
+              exit 1
+
+            else
+              echo "Multiple release APKs found and no Universal APK is available:"
+              printf '  %s\n' "${RELEASE_APKS[@]}"
+              exit 1
+            fi
+          fi
+
+          echo "Selected APK: $APK"
 
           if [[ ! -f "$APK" ]]; then
             echo "Release APK not found: $APK"
