@@ -1,15 +1,17 @@
 package com.beeregg2001.komorebi.di
 
 import com.beeregg2001.komorebi.data.SettingsRepository
-import com.beeregg2001.komorebi.data.repository.KonomiTvApiService
 import com.beeregg2001.komorebi.data.api.KonomiApi
-import com.beeregg2001.komorebi.data.api.interceptor.MockRecordInterceptor
+import com.beeregg2001.komorebi.data.model.StreamSource
+import com.beeregg2001.komorebi.data.api.interceptor.CloudflareAccessInterceptor
 import com.google.gson.Gson
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import okhttp3.Interceptor
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -29,7 +31,10 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(settingsRepository: SettingsRepository): OkHttpClient {
+    fun provideOkHttpClient(
+        settingsRepository: SettingsRepository,
+        cloudflareAccessInterceptor: CloudflareAccessInterceptor
+    ): OkHttpClient {
         val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
             override fun checkClientTrusted(
                 chain: Array<out X509Certificate>?,
@@ -52,6 +57,8 @@ object NetworkModule {
 
         val logging = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BODY
+            // Cloudflare Access のシークレットは logcat に平文で残さない
+            redactHeader(SettingsRepository.CF_ACCESS_CLIENT_SECRET_HEADER)
         }
 
         return OkHttpClient.Builder()
@@ -60,11 +67,18 @@ object NetworkModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-//            .addInterceptor(MockRecordInterceptor())
-            .addInterceptor { chain ->
+            // ★ 修正: Interceptorを明示的に指定し、SettingsRepositoryから正しくURLを取得する
+            .addInterceptor(Interceptor { chain ->
                 val originalRequest = chain.request()
                 val baseUrlString = runBlocking {
-                    settingsRepository.getBaseUrl()
+                    // KonomiTVのベースURLを動的に取得して組み立てる
+                    val ip = settingsRepository.konomiIp.first()
+                    val port = settingsRepository.konomiPort.first()
+                    if (ip.startsWith("http://") || ip.startsWith("https://")) {
+                        "$ip:$port"
+                    } else {
+                        "http://$ip:$port"
+                    }
                 }
                 val newUrl = baseUrlString.toHttpUrlOrNull() ?: originalRequest.url
                 val modifiedUrl = originalRequest.url.newBuilder()
@@ -76,7 +90,11 @@ object NetworkModule {
                     .url(modifiedUrl)
                     .build()
                 chain.proceed(newRequest)
-            }
+            })
+            .addInterceptor(cloudflareAccessInterceptor)
+            // 最後に追加し、実際に送信されるヘッダーとレスポンス本文をログ出力する
+            // (CF Access のブロック/認証ページがHTMLで返ってきていないか確認するため)
+            .addInterceptor(logging)
             .build()
     }
 
@@ -90,7 +108,8 @@ object NetworkModule {
     @Singleton
     fun provideRetrofit(okHttpClient: OkHttpClient, gson: Gson): Retrofit {
         return Retrofit.Builder()
-            .baseUrl("https://192-168-11-10.local.konomi.tv:7000")
+            // ここはダミーの初期値（Interceptorで動的に書き換わるため何でもOK）
+            .baseUrl("https://192-168-11-100.local.konomi.tv:7000")
             .client(okHttpClient)
             .addConverterFactory(GsonConverterFactory.create(gson))
             .build()
@@ -100,11 +119,5 @@ object NetworkModule {
     @Singleton
     fun provideKonomiApi(retrofit: Retrofit): KonomiApi {
         return retrofit.create(KonomiApi::class.java)
-    }
-
-    @Provides
-    @Singleton
-    fun provideKonomiTvApiService(retrofit: Retrofit): KonomiTvApiService {
-        return retrofit.create(KonomiTvApiService::class.java)
     }
 }
