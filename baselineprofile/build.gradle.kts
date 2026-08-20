@@ -28,6 +28,14 @@ android {
     kotlinOptions {
         jvmTarget = "11"
     }
+
+    flavorDimensions += "distribution"
+
+    productFlavors {
+        create("sukiyaki") {
+            dimension = "distribution"
+        }
+    }
 }
 
 baselineProfile {
