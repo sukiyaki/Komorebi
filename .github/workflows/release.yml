@@ -1,0 +1,335 @@
+name: Build / Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        required: true
+        default: beta
+        type: choice
+        options:
+          - beta
+          - stable
+
+      dry_run:
+        description: "Build and sign only; do not publish"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sukiyaki-release
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Select source
+        id: source
+        shell: bash
+        run: |
+          if [[ "${{ inputs.channel }}" == "stable" ]]; then
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=develop" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.source.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build sukiyaki APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleSukiyakiRelease --stacktrace
+
+      - name: Read APK metadata
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(
+            find app/build/outputs/apk \
+              -type f \
+              -name '*universal*.apk' \
+              | head -n 1
+          )"
+
+          if [[ -z "$APK" ]]; then
+            echo "Universal APK not found"
+            exit 1
+          fi
+
+          BUILD_TOOLS="$(
+            find "$ANDROID_SDK_ROOT/build-tools" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              | sort -V \
+              | tail -n 1
+          )"
+
+          BADGING="$("$BUILD_TOOLS/aapt" dump badging "$APK" | head -n 1)"
+
+          APPLICATION_ID="$(
+            sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<< "$BADGING"
+          )"
+
+          VERSION_CODE="$(
+            sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "$BADGING"
+          )"
+
+          VERSION_NAME="$(
+            sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "$BADGING"
+          )"
+
+          if [[ "$APPLICATION_ID" != "com.beeregg2001.komorebi.sukiyaki" ]]; then
+            echo "Unexpected applicationId: $APPLICATION_ID"
+            exit 1
+          fi
+
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "build_tools=$BUILD_TOOLS" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate channel
+        env:
+          VERSION_NAME: ${{ steps.apk.outputs.version_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            if [[ "$VERSION_NAME" != *"-beta"* ]]; then
+              echo "Beta selected, but version is not beta: $VERSION_NAME"
+              exit 1
+            fi
+          else
+            if [[ "$VERSION_NAME" == *"-beta"* ]]; then
+              echo "Stable selected, but version is beta: $VERSION_NAME"
+              exit 1
+            fi
+          fi
+
+      - name: Restore signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SUKIYAKI_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode \
+            > "$RUNNER_TEMP/sukiyaki-release.jks"
+
+      - name: Sign APK
+        id: signed
+        env:
+          APK: ${{ steps.apk.outputs.apk }}
+          BUILD_TOOLS: ${{ steps.apk.outputs.build_tools }}
+          VERSION_NAME: ${{ steps.apk.outputs.version_name }}
+          KEYSTORE_PASSWORD: ${{ secrets.SUKIYAKI_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SUKIYAKI_KEY_ALIAS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          APK_NAME="Komorebi-${VERSION_NAME}.apk"
+          SIGNED_APK="$PWD/dist/$APK_NAME"
+
+          "$BUILD_TOOLS/zipalign" \
+            -P 16 \
+            -f \
+            4 \
+            "$APK" \
+            "$RUNNER_TEMP/aligned.apk"
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$RUNNER_TEMP/sukiyaki-release.jks" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --out "$SIGNED_APK" \
+            "$RUNNER_TEMP/aligned.apk"
+
+          "$BUILD_TOOLS/apksigner" verify \
+            --verbose \
+            --print-certs \
+            "$SIGNED_APK"
+
+          echo "name=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "path=$SIGNED_APK" >> "$GITHUB_OUTPUT"
+
+      # dry-run でも APK は取得可能
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Komorebi-${{ steps.apk.outputs.version_name }}
+          path: ${{ steps.signed.outputs.path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Prepare release
+        id: release
+        shell: bash
+        run: |
+          VERSION_NAME="${{ steps.apk.outputs.version_name }}"
+
+          echo "tag=v${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          if git ls-remote \
+            --exit-code \
+            --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists: $TAG"
+            exit 1
+          fi
+
+      - name: Push release tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION_NAME: ${{ steps.apk.outputs.version_name }}
+          APK_PATH: ${{ steps.signed.outputs.path }}
+        shell: bash
+        run: |
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            gh release create "$TAG" \
+              "$APK_PATH" \
+              --verify-tag \
+              --title "$VERSION_NAME" \
+              --generate-notes \
+              --prerelease \
+              --latest=false
+          else
+            gh release create "$TAG" \
+              "$APK_PATH" \
+              --verify-tag \
+              --title "$VERSION_NAME" \
+              --generate-notes \
+              --latest
+          fi
+
+      - name: Checkout update feed
+        if: ${{ !inputs.dry_run }}
+        uses: actions/checkout@v5
+        with:
+          ref: update-manifest
+          path: update-feed
+
+      - name: Update version.json
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION_CODE: ${{ steps.apk.outputs.version_code }}
+          VERSION_NAME: ${{ steps.apk.outputs.version_name }}
+          APK_NAME: ${{ steps.signed.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_NOTES="$(
+            gh release view "$TAG" \
+              --json body \
+              --jq '.body'
+          )"
+
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${APK_NAME}"
+
+          cd update-feed
+
+          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+            jq \
+              --argjson code "$VERSION_CODE" \
+              --arg name "$VERSION_NAME" \
+              --arg notes "$RELEASE_NOTES" \
+              --arg url "$APK_URL" \
+              '
+              .beta = (.beta // {}) |
+              .beta.versionCode = $code |
+              .beta.versionName = $name |
+              .beta.releaseNotes = $notes |
+              .beta.apkUrl = $url
+              ' version.json > version.json.tmp
+          else
+            jq \
+              --argjson code "$VERSION_CODE" \
+              --arg name "$VERSION_NAME" \
+              --arg notes "$RELEASE_NOTES" \
+              --arg url "$APK_URL" \
+              '
+              .versionCode = $code |
+              .versionName = $name |
+              .releaseNotes = $notes |
+              .apkUrl = $url
+              ' version.json > version.json.tmp
+          fi
+
+          mv version.json.tmp version.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add version.json
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Update ${VERSION_NAME}"
+            git push origin HEAD:update-manifest
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Komorebi sukiyaki"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Channel | \`${{ inputs.channel }}\` |"
+            echo "| Source | \`${{ steps.source.outputs.ref }}\` |"
+            echo "| Commit | \`${{ steps.apk.outputs.source_sha }}\` |"
+            echo "| Dry run | \`${{ inputs.dry_run }}\` |"
+            echo "| Version | \`${{ steps.apk.outputs.version_name }}\` |"
+            echo "| Version code | \`${{ steps.apk.outputs.version_code }}\` |"
+            echo "| Tag | \`${{ steps.release.outputs.tag }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

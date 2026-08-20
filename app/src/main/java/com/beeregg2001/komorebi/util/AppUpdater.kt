@@ -21,6 +21,7 @@ import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.beeregg2001.komorebi.BuildConfig
 
 sealed class UpdateState {
     object Idle : UpdateState()
@@ -46,8 +47,7 @@ class AppUpdater @Inject constructor(
     private val client = OkHttpClient()
 
     // ★ご自身のGitHubのversion.jsonのRaw URLに書き換えてください
-    private val versionJsonUrl =
-        "https://raw.githubusercontent.com/BeerEgg2001/Komorebi/main/version.json"
+    private val versionJsonUrl = BuildConfig.UPDATE_MANIFEST_URL
 
     // ★ 修正: 引数に receiveBetaUpdates フラグを追加し、デフォルトは false (Stable) とする
     suspend fun checkForUpdates(receiveBetaUpdates: Boolean = false) = withContext(Dispatchers.IO) {
@@ -60,9 +60,15 @@ class AppUpdater @Inject constructor(
                 val jsonString = response.body?.string() ?: return@withContext
                 val rootJson = JSONObject(jsonString)
 
-                // ★ 修正: ベータ版の受信が有効で、かつJSON内に "beta" オブジェクトが定義されていればそちらをパースする
-                val targetJson = if (receiveBetaUpdates && rootJson.has("beta")) {
-                    rootJson.getJSONObject("beta")
+                // ベータ版の受信が有効な場合は
+                // Stable または Beta の versionCode が新しいバージョンを更新対象として選択する
+                val betaJson = rootJson.optJSONObject("beta")
+                val targetJson = if (
+                    receiveBetaUpdates &&
+                    betaJson != null &&
+                    betaJson.optLong("versionCode", 0) > rootJson.optLong("versionCode", 0)
+                ) {
+                    betaJson
                 } else {
                     rootJson
                 }
