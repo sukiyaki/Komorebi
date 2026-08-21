@@ -223,7 +223,7 @@ class SettingsViewModel @Inject constructor(
     val liveQuality: StateFlow<String> = settingsRepository.liveQuality.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
-        "1080p-60fps"
+        "1080p"
     )
     val videoEncoding: StateFlow<String> = settingsRepository.videoEncoding.stateIn(
         viewModelScope,
@@ -233,7 +233,7 @@ class SettingsViewModel @Inject constructor(
     val videoQuality: StateFlow<String> = settingsRepository.videoQuality.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5000),
-        "1080p-60fps"
+        "1080p"
     )
     val liveSubtitleDefault: StateFlow<String> = settingsRepository.liveSubtitleDefault.stateIn(
         viewModelScope,

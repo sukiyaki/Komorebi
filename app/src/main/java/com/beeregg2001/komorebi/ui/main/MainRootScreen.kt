@@ -343,8 +343,8 @@ fun MainRootScreen(
     val edcbIp by settingsViewModel.edcbIp.collectAsState(initial = "")
     val edcbPort by settingsViewModel.edcbPort.collectAsState(initial = "")
 
-    val defaultLiveQuality by settingsViewModel.liveQuality.collectAsState(initial = "1080p-60fps")
-    val defaultVideoQuality by settingsViewModel.videoQuality.collectAsState(initial = "1080p-60fps")
+    val defaultLiveQuality by settingsViewModel.liveQuality.collectAsState(initial = "1080p")
+    val defaultVideoQuality by settingsViewModel.videoQuality.collectAsState(initial = "1080p")
 
     val startupChannelSetting by settingsViewModel.startupChannel.collectAsState()
     var isLongPressHandled by remember { mutableStateOf(false) }
