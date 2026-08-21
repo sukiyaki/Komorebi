@@ -3,15 +3,6 @@ name: Build / Release APK
 on:
   workflow_dispatch:
     inputs:
-      channel:
-        description: "Release channel"
-        required: true
-        default: beta
-        type: choice
-        options:
-          - beta
-          - stable
-
       dry_run:
         description: "Build and sign only; do not publish"
         required: true
@@ -30,21 +21,67 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Select source
-        id: source
+      - name: Resolve release context
+        id: release_context
         shell: bash
         run: |
-          if [[ "${{ inputs.channel }}" == "stable" ]]; then
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=beta" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF_TYPE" != "branch" ]]; then
+            echo "Release workflow must run from a branch: $GITHUB_REF"
+            exit 1
           fi
+
+          case "$GITHUB_REF_NAME" in
+            main)
+              RELEASE_CHANNEL="stable"
+              ;;
+            beta)
+              RELEASE_CHANNEL="beta"
+              ;;
+            *)
+              echo "Release workflow must run from main or beta: $GITHUB_REF_NAME"
+              exit 1
+              ;;
+          esac
+
+          echo "source_ref=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "channel=$RELEASE_CHANNEL" >> "$GITHUB_OUTPUT"
 
       - name: Checkout source
         uses: actions/checkout@v5
         with:
-          ref: ${{ steps.source.outputs.ref }}
           fetch-depth: 0
+
+      - name: Checkout update feed
+        uses: actions/checkout@v5
+        with:
+          ref: update-manifest
+          path: update-feed
+
+      - name: Read published version code
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LATEST_PUBLISHED_VERSION_CODE="$(
+            jq -er \
+              '[.versionCode // 0, .beta.versionCode // 0] | max' \
+              update-feed/version.json
+          )"
+
+          if [[ ! "$LATEST_PUBLISHED_VERSION_CODE" =~ ^[0-9]+$ ]]; then
+            echo "Published versionCode is not an integer: $LATEST_PUBLISHED_VERSION_CODE"
+            exit 1
+          fi
+
+          if (( LATEST_PUBLISHED_VERSION_CODE > 2100000000 )); then
+            echo "Android versionCode limit reached: $LATEST_PUBLISHED_VERSION_CODE"
+            exit 1
+          fi
+
+          echo "latest_published_version_code=$LATEST_PUBLISHED_VERSION_CODE" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -83,7 +120,9 @@ jobs:
       - name: Build sukiyaki APK
         run: |
           chmod +x gradlew
-          ./gradlew :app:assembleSukiyakiRelease --stacktrace
+          ./gradlew :app:assembleSukiyakiRelease \
+            -PlatestPublishedVersionCode="${{ steps.version.outputs.latest_published_version_code }}" \
+            --stacktrace
 
       - name: Read APK metadata
         id: apk
@@ -175,21 +214,22 @@ jobs:
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Validate channel
+      - name: Validate branch version
         env:
+          RELEASE_CHANNEL: ${{ steps.release_context.outputs.channel }}
           VERSION_NAME: ${{ steps.apk.outputs.version_name }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
             if [[ "$VERSION_NAME" != *"-beta"* ]]; then
-              echo "Beta selected, but version is not beta: $VERSION_NAME"
+              echo "beta branch requires a beta version: $VERSION_NAME"
               exit 1
             fi
           else
             if [[ "$VERSION_NAME" == *"-beta"* ]]; then
-              echo "Stable selected, but version is beta: $VERSION_NAME"
+              echo "main branch requires a stable version: $VERSION_NAME"
               exit 1
             fi
           fi
@@ -252,13 +292,14 @@ jobs:
 
       - name: Prepare release
         id: release
+        env:
+          RELEASE_CHANNEL: ${{ steps.release_context.outputs.channel }}
+          VERSION_NAME: ${{ steps.apk.outputs.version_name }}
         shell: bash
         run: |
-          VERSION_NAME="${{ steps.apk.outputs.version_name }}"
-
           echo "tag=v${VERSION_NAME}" >> "$GITHUB_OUTPUT"
 
-          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
@@ -298,9 +339,10 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           VERSION_NAME: ${{ steps.apk.outputs.version_name }}
           APK_PATH: ${{ steps.signed.outputs.path }}
+          RELEASE_CHANNEL: ${{ steps.release_context.outputs.channel }}
         shell: bash
         run: |
-          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
             gh release create "$TAG" \
               "$APK_PATH" \
               --verify-tag \
@@ -317,13 +359,6 @@ jobs:
               --latest
           fi
 
-      - name: Checkout update feed
-        if: ${{ !inputs.dry_run }}
-        uses: actions/checkout@v5
-        with:
-          ref: update-manifest
-          path: update-feed
-
       - name: Update version.json
         if: ${{ !inputs.dry_run }}
         env:
@@ -332,6 +367,7 @@ jobs:
           VERSION_CODE: ${{ steps.apk.outputs.version_code }}
           VERSION_NAME: ${{ steps.apk.outputs.version_name }}
           APK_NAME: ${{ steps.signed.outputs.name }}
+          RELEASE_CHANNEL: ${{ steps.release_context.outputs.channel }}
         shell: bash
         run: |
           set -euo pipefail
@@ -346,7 +382,7 @@ jobs:
 
           cd update-feed
 
-          if [[ "${{ inputs.channel }}" == "beta" ]]; then
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
             jq \
               --argjson code "$VERSION_CODE" \
               --arg name "$VERSION_NAME" \
@@ -394,11 +430,12 @@ jobs:
             echo
             echo "| Item | Value |"
             echo "|---|---|"
-            echo "| Channel | \`${{ inputs.channel }}\` |"
-            echo "| Source | \`${{ steps.source.outputs.ref }}\` |"
+            echo "| Channel | \`${{ steps.release_context.outputs.channel }}\` |"
+            echo "| Source | \`${{ steps.release_context.outputs.source_ref }}\` |"
             echo "| Commit | \`${{ steps.apk.outputs.source_sha }}\` |"
             echo "| Dry run | \`${{ inputs.dry_run }}\` |"
             echo "| Version | \`${{ steps.apk.outputs.version_name }}\` |"
+            echo "| Published version code | \`${{ steps.version.outputs.latest_published_version_code }}\` |"
             echo "| Version code | \`${{ steps.apk.outputs.version_code }}\` |"
             echo "| Tag | \`${{ steps.release.outputs.tag }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

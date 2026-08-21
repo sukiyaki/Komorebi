@@ -8,6 +8,17 @@ plugins {
     alias(libs.plugins.baselineprofile)
 }
 
+// GitHub Actions が update-manifest/version.json を読み、stable と beta のうち
+// 大きい方の公開済み versionCode をこのプロパティに渡す。
+// versionCode の末尾3桁を releaseRevision として引き継ぎ、1 増やす。
+val latestPublishedVersionCode = providers
+    .gradleProperty("latestPublishedVersionCode")
+    .orNull
+    ?.let { value ->
+        value.toIntOrNull()
+            ?: error("latestPublishedVersionCode must be an integer")
+    }
+
 android {
     namespace = "com.beeregg2001.komorebi"
     compileSdk = 35
@@ -45,6 +56,32 @@ android {
         }
     }
 
+    val baseVersionCode = defaultConfig.versionCode
+        ?: error("The base versionCode must be set")
+
+    require(baseVersionCode in 1..2_099_999) {
+        "The base versionCode is too large for a release versionCode"
+    }
+
+    latestPublishedVersionCode?.let {
+        require(it in 0..2_100_000_000) {
+            "latestPublishedVersionCode must be a valid Android versionCode"
+        }
+        require(it / 1_000 <= baseVersionCode) {
+            "The base versionCode must not be lower than the published version"
+        }
+    }
+
+    val releaseRevision = latestPublishedVersionCode
+        ?.let { it % 1_000 + 1 }
+        ?: 1
+
+    require(releaseRevision in 1..999) {
+        "releaseRevision limit reached; increment the base versionCode"
+    }
+
+    val releaseVersionCode = baseVersionCode * 1_000 + releaseRevision
+
     buildFeatures {
         buildConfig = true
     }
@@ -59,9 +96,9 @@ android {
             applicationId = "com.beeregg2001.komorebi.sukiyaki"
 
             // sukiyaki APK 独自のバージョン
-            // 本家versionCode*1000 + X
-            versionCode = 10001
-            versionNameSuffix = "-sukiyaki.1"
+            // baseVersionCode * 1000 + releaseRevision
+            versionCode = releaseVersionCode
+            versionNameSuffix = "-sukiyaki.$releaseRevision"
 
             // sukiyaki 独自の update feed
             buildConfigField(
