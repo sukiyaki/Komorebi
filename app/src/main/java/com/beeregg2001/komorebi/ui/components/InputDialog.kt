@@ -23,6 +23,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.tv.material3.*
@@ -33,7 +36,9 @@ fun InputDialog(
     title: String,
     initialValue: String,
     isLongToken: Boolean = false,
+    isPassword: Boolean = false,
     placeholder: String? = null,
+    onDelete: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
@@ -109,7 +114,15 @@ fun InputDialog(
                         fontWeight = FontWeight.Medium
                     ),
                     interactionSource = textFieldInteractionSource,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    visualTransformation = if (isPassword) {
+                        PasswordVisualTransformation()
+                    } else {
+                        VisualTransformation.None
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text,
+                        imeAction = ImeAction.Done
+                    ),
                     // 完了キーで保存ボタンへ移動
                     keyboardActions = KeyboardActions(
                         onDone = {
@@ -149,6 +162,14 @@ fun InputDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    if (onDelete != null) {
+                        MonochromeButton(
+                            text = "削除",
+                            onClick = onDelete,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     // キャンセルボタン
                     MonochromeButton(
                         text = "キャンセル",

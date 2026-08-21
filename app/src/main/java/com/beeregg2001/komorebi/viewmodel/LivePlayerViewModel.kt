@@ -458,8 +458,8 @@ class LivePlayerViewModel @Inject constructor(
                     delay(if (isAutoRetry) 0 else 600)
 
                     val audioOutputMode = settingsRepository.audioOutputMode.first()
-                    // ★ 追加: Cloudflare Zero Trust サービストークン (未設定なら空Map)
-                    val cfAccessHeaders = settingsRepository.getCfAccessHeaders()
+                    // 接続先に応じて Cloudflare Access と KonomiTV Basic 認証を組み立てる
+                    val requestHeaders = settingsRepository.getRequestHeaders(source)
                     val newPlayer = withContext(Dispatchers.Main) {
                         livePlayerFactory.createExoPlayer(
                             audioOutputMode = audioOutputMode,
@@ -496,7 +496,7 @@ class LivePlayerViewModel @Inject constructor(
                         konomiTvQuality,
                         config,
                         mainTsDataSourceFactory,
-                        cfAccessHeaders
+                        requestHeaders
                     )
 
                     withContext(Dispatchers.Main) {
@@ -508,7 +508,7 @@ class LivePlayerViewModel @Inject constructor(
                                 channel.displayChannelId,
                                 konomiTvQuality,
                                 config,
-                                cfAccessHeaders
+                                requestHeaders
                             )
                         }
                         startPlayback(
@@ -518,7 +518,7 @@ class LivePlayerViewModel @Inject constructor(
                             source,
                             isEdcbDirect,
                             mainTsDataSourceFactory,
-                            cfAccessHeaders
+                            requestHeaders
                         )
                         liveJikkyoManager.startJikkyo(channel, source)
                     }
@@ -557,8 +557,8 @@ class LivePlayerViewModel @Inject constructor(
                     delay(if (isAutoRetry) 0 else 600)
 
                     val audioOutputMode = settingsRepository.audioOutputMode.first()
-                    // ★ 追加: Cloudflare Zero Trust サービストークン (未設定なら空Map)
-                    val cfAccessHeaders = settingsRepository.getCfAccessHeaders()
+                    // 接続先に応じて Cloudflare Access と KonomiTV Basic 認証を組み立てる
+                    val requestHeaders = settingsRepository.getRequestHeaders(source)
                     val newDualPlayer = withContext(Dispatchers.Main) {
                         livePlayerFactory.createExoPlayer(
                             audioOutputMode = audioOutputMode,
@@ -595,7 +595,7 @@ class LivePlayerViewModel @Inject constructor(
                         konomiTvQuality,
                         config,
                         dualTsDataSourceFactory,
-                        cfAccessHeaders
+                        requestHeaders
                     )
 
                     withContext(Dispatchers.Main) {
@@ -607,7 +607,7 @@ class LivePlayerViewModel @Inject constructor(
                                 channel.displayChannelId,
                                 konomiTvQuality,
                                 config,
-                                cfAccessHeaders
+                                requestHeaders
                             )
                         }
                         startPlayback(
@@ -617,7 +617,7 @@ class LivePlayerViewModel @Inject constructor(
                             source,
                             isEdcbDirect,
                             dualTsDataSourceFactory,
-                            cfAccessHeaders
+                            requestHeaders
                         )
                     }
                 }
@@ -666,7 +666,7 @@ class LivePlayerViewModel @Inject constructor(
         quality: String,
         config: BackendConfig,
         factory: TsReadExDataSourceFactory,
-        cfAccessHeaders: Map<String, String> = emptyMap()
+        requestHeaders: Map<String, String> = emptyMap()
     ): String {
         return when (source) {
             StreamSource.EDCB -> {
@@ -715,8 +715,8 @@ class LivePlayerViewModel @Inject constructor(
                         "-d",
                         "13"
                     )
-                    // ★ 追加: Mirakurun ストリームにも Cloudflare Access ヘッダーを付与
-                    factory.requestHeaders = cfAccessHeaders
+                    // Mirakurun ストリームには Cloudflare Access ヘッダーを付与する
+                    factory.requestHeaders = requestHeaders
                     UrlBuilder.getMirakurunStreamUrl(
                         config.ip,
                         config.port,
@@ -743,7 +743,7 @@ class LivePlayerViewModel @Inject constructor(
         source: StreamSource,
         isEdcbDirect: Boolean,
         factory: TsReadExDataSourceFactory,
-        cfAccessHeaders: Map<String, String> = emptyMap()
+        requestHeaders: Map<String, String> = emptyMap()
     ) {
         try {
             val mediaItem = MediaItem.fromUri(streamUrl)
@@ -771,18 +771,18 @@ class LivePlayerViewModel @Inject constructor(
                     if (source == StreamSource.EDCB && !isEdcbDirect) {
                         val uri = Uri.parse(streamUrl)
                         val ctok = uri.getQueryParameter("ctok") ?: ""
-                        // ★ 追加: Cookie に加えて Cloudflare Access ヘッダーも付与
+                        // Cookie に加えて接続先用の認証ヘッダーも付与する
                         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
                             .setDefaultRequestProperties(
-                                mapOf("Cookie" to "ctok=$ctok") + cfAccessHeaders
+                                mapOf("Cookie" to "ctok=$ctok") + requestHeaders
                             )
                             .setAllowCrossProtocolRedirects(true)
                         HlsMediaSource.Factory(httpDataSourceFactory)
                             .setAllowChunklessPreparation(false).createMediaSource(mediaItem)
-                    } else if (cfAccessHeaders.isNotEmpty()) {
-                        // ★ 追加: KonomiTV ストリームに Cloudflare Access ヘッダーを付与
+                    } else if (requestHeaders.isNotEmpty()) {
+                        // KonomiTV ストリームに設定済みの認証ヘッダーを付与する
                         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-                            .setDefaultRequestProperties(cfAccessHeaders)
+                            .setDefaultRequestProperties(requestHeaders)
                         DefaultMediaSourceFactory(
                             DefaultDataSource.Factory(uiContext, httpDataSourceFactory)
                         ).createMediaSource(mediaItem)
@@ -802,14 +802,14 @@ class LivePlayerViewModel @Inject constructor(
         channelId: String,
         quality: String,
         config: BackendConfig.KonomiTv,
-        cfAccessHeaders: Map<String, String> = emptyMap()
+        requestHeaders: Map<String, String> = emptyMap()
     ) {
         val eventUrl =
             UrlBuilder.getKonomiTvLiveEventsUrl(config.ip, config.port, channelId, quality)
         val request =
             Request.Builder().url(eventUrl).header("User-Agent", "Komorebi/1.0 (Main)")
-                // ★ 追加: Cloudflare Access ヘッダーを付与
-                .apply { cfAccessHeaders.forEach { (name, value) -> header(name, value) } }
+                // KonomiTV に設定済みの認証ヘッダーを付与する
+                .apply { requestHeaders.forEach { (name, value) -> header(name, value) } }
                 .build()
         mainEventSource = EventSources.createFactory(okHttpClient)
             .newEventSource(request, object : EventSourceListener() {
@@ -877,14 +877,14 @@ class LivePlayerViewModel @Inject constructor(
         channelId: String,
         quality: String,
         config: BackendConfig.KonomiTv,
-        cfAccessHeaders: Map<String, String> = emptyMap()
+        requestHeaders: Map<String, String> = emptyMap()
     ) {
         val eventUrl =
             UrlBuilder.getKonomiTvLiveEventsUrl(config.ip, config.port, channelId, quality)
         val request =
             Request.Builder().url(eventUrl).header("User-Agent", "Komorebi/1.0 (Dual)")
-                // ★ 追加: Cloudflare Access ヘッダーを付与
-                .apply { cfAccessHeaders.forEach { (name, value) -> header(name, value) } }
+                // KonomiTV に設定済みの認証ヘッダーを付与する
+                .apply { requestHeaders.forEach { (name, value) -> header(name, value) } }
                 .build()
         dualEventSource = EventSources.createFactory(okHttpClient)
             .newEventSource(request, object : EventSourceListener() {

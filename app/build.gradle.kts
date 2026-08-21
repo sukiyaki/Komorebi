@@ -45,6 +45,33 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
+    flavorDimensions += "distribution"
+
+    productFlavors {
+        create("sukiyaki") {
+            dimension = "distribution"
+
+            // 本家とは別アプリとしてインストールできるようにする
+            applicationId = "com.beeregg2001.komorebi.sukiyaki"
+
+            // sukiyaki APK 独自のバージョン
+            // 本家versionCode*1000 + X
+            versionCode = 10001
+            versionNameSuffix = "-sukiyaki.1"
+
+            // sukiyaki 独自の update feed
+            buildConfigField(
+                "String",
+                "UPDATE_MANIFEST_URL",
+                "\"https://raw.githubusercontent.com/sukiyaki/Komorebi/update-manifest/version.json\""
+            )
+        }
+    }
+
     // --- C++ ビルド設定 (2/2): CMakeLists.txt のパス指定 ---
     externalNativeBuild {
         cmake {

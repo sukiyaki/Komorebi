@@ -19,6 +19,8 @@ class SettingPreferences(
 
     val konomiIp: String,
     val konomiPort: String,
+    val konomiBasicUsername: String,
+    val konomiBasicPassword: String,
     val mirakurunIp: String,
     val mirakurunPort: String,
     val preferredSource: String,
@@ -106,6 +108,8 @@ fun rememberSettingPreferences(repository: SettingsRepository): SettingPreferenc
         epgStationPort = repository.epgStationPort.collectAsState(initial = "8888").value,
         konomiIp = repository.konomiIp.collectAsState(initial = "").value,
         konomiPort = repository.konomiPort.collectAsState(initial = "7000").value,
+        konomiBasicUsername = repository.konomiBasicUsername.collectAsState(initial = "").value,
+        konomiBasicPassword = repository.konomiBasicPassword.collectAsState(initial = "").value,
         mirakurunIp = repository.mirakurunIp.collectAsState(initial = "").value,
         mirakurunPort = repository.mirakurunPort.collectAsState(initial = "40772").value,
         preferredSource = repository.preferredStreamSource.collectAsState(initial = "KONOMITV").value,

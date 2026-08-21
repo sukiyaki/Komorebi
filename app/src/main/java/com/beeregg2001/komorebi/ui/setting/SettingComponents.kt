@@ -71,7 +71,9 @@ sealed class SettingDialogState {
         val title: String,
         val initialValue: String,
         val isLongToken: Boolean = false,
+        val isPassword: Boolean = false,
         val placeholder: String? = null,
+        val onDelete: (() -> Unit)? = null,
         val onConfirm: (String) -> Unit
     ) : SettingDialogState()
 

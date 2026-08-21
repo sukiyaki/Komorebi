@@ -233,6 +233,8 @@ fun ConnectionSettingsContent(
     epgStationPort: String,
     kIp: String,
     kPort: String,
+    konomiBasicUsername: String,
+    konomiBasicPassword: String,
     mIp: String,
     mPort: String,
     prefSrc: String,
@@ -244,6 +246,8 @@ fun ConnectionSettingsContent(
     smbItemRs: List<FocusRequester>,
     onSelectEdcbPlayMethod: () -> Unit,
     edcbPlayMethodR: FocusRequester,
+    konomiBasicUsernameR: FocusRequester,
+    konomiBasicPasswordR: FocusRequester,
     cfClientId: String,
     cfClientSecret: String,
     onEdit: (String, String) -> Unit,
@@ -359,7 +363,7 @@ fun ConnectionSettingsContent(
                     .focusProperties {
                         left = sidebarR; up = backendIpR;
                         down =
-                            if (backendType == "EDCB") edcbHttpPortR else if (backendType != "MIRAKURUN_ONLY") prefSrcR else addSmbR
+                            if (backendType == "EDCB") edcbHttpPortR else if (backendType == "KONOMITV") konomiBasicUsernameR else addSmbR
                     },
                 onClick = { onClick(backendPortR); onEdit(portTitle, currentPort) }
             )
@@ -382,6 +386,53 @@ fun ConnectionSettingsContent(
 
             if (currentIp.isBlank() || currentPort.isBlank()) {
                 ValidationErrorText("メインシステムのIPアドレスまたはポート番号が未設定です。\n番組情報の取得や録画機能が正常に動作しません。")
+            }
+        }
+
+        if (backendType == "KONOMITV") {
+            SettingsSection(AppStrings.SETTINGS_SECTION_KONOMITV_BASIC_AUTH) {
+                SettingItem(
+                    title = AppStrings.SETTINGS_ITEM_KONOMITV_BASIC_USERNAME,
+                    value = konomiBasicUsername.ifEmpty { AppStrings.SETTINGS_VALUE_UNSET },
+                    icon = Icons.Default.Person,
+                    modifier = Modifier
+                        .focusRequester(konomiBasicUsernameR)
+                        .focusProperties {
+                            left = sidebarR
+                            up = backendPortR
+                            down = konomiBasicPasswordR
+                        },
+                    onClick = {
+                        onClick(konomiBasicUsernameR)
+                        onEdit(
+                            AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_USERNAME,
+                            konomiBasicUsername
+                        )
+                    }
+                )
+                SettingItem(
+                    title = AppStrings.SETTINGS_ITEM_KONOMITV_BASIC_PASSWORD,
+                    value = if (konomiBasicPassword.isEmpty()) {
+                        AppStrings.SETTINGS_VALUE_UNSET
+                    } else {
+                        AppStrings.SETTINGS_VALUE_MASKED
+                    },
+                    icon = Icons.Default.Key,
+                    modifier = Modifier
+                        .focusRequester(konomiBasicPasswordR)
+                        .focusProperties {
+                            left = sidebarR
+                            up = konomiBasicUsernameR
+                            down = prefSrcR
+                        },
+                    onClick = {
+                        onClick(konomiBasicPasswordR)
+                        onEdit(
+                            AppStrings.SETTINGS_INPUT_KONOMITV_BASIC_PASSWORD,
+                            konomiBasicPassword
+                        )
+                    }
+                )
             }
         }
 
@@ -421,7 +472,11 @@ fun ConnectionSettingsContent(
                         .focusRequester(prefSrcR)
                         .focusProperties {
                             left = sidebarR
-                            up = if (backendType == "EDCB") edcbPlayMethodR else backendPortR
+                            up = when (backendType) {
+                                "EDCB" -> edcbPlayMethodR
+                                "KONOMITV" -> konomiBasicPasswordR
+                                else -> backendPortR
+                            }
                             down = if (hasOverride) overrideIpR else addSmbR
                         },
                     onClick = { onClick(prefSrcR); onSelectSrc() }
