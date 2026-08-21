@@ -190,12 +190,12 @@ class SettingsRepository @Inject constructor(
     val liveEncoding: Flow<String> = context.dataStore.data.map {
         StreamEncoding.fromValue(it[LIVE_ENCODING] ?: StreamEncoding.DEFAULT_VALUE).value
     }
-    val liveQuality: Flow<String> = context.dataStore.data.map { it[LIVE_QUALITY] ?: "1080p-60fps" }
+    val liveQuality: Flow<String> = context.dataStore.data.map { it[LIVE_QUALITY] ?: "1080p" }
     val videoEncoding: Flow<String> = context.dataStore.data.map {
         StreamEncoding.fromValue(it[VIDEO_ENCODING] ?: StreamEncoding.DEFAULT_VALUE).value
     }
     val videoQuality: Flow<String> =
-        context.dataStore.data.map { it[VIDEO_QUALITY] ?: "1080p-60fps" }
+        context.dataStore.data.map { it[VIDEO_QUALITY] ?: "1080p" }
     val liveSubtitleDefault: Flow<String> =
         context.dataStore.data.map { it[LIVE_SUBTITLE_DEFAULT] ?: "OFF" }
     val videoSubtitleDefault: Flow<String> =

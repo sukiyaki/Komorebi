@@ -60,7 +60,7 @@ private const val TAG = "LivePlayerScreen"
 @Composable
 fun LivePlayerScreen(
     channel: Channel,
-    initialQuality: String = "1080p-60fps",
+    initialQuality: String = "1080p",
     isBaseballMode: Boolean = false,
     isMiniListOpen: Boolean,
     onMiniListToggle: (Boolean) -> Unit,

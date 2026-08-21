@@ -55,7 +55,7 @@ fun VideoPlayerScreen(
     program: RecordedProgram,
     smbItem: SmbItem? = null,
     initialPositionMs: Long = 0,
-    initialQuality: String = "1080p-60fps",
+    initialQuality: String = "1080p",
     showControls: Boolean,
     onShowControlsChange: (Boolean) -> Unit,
     isSubMenuOpen: Boolean,

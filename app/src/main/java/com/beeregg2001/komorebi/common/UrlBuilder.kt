@@ -66,7 +66,7 @@ object UrlBuilder {
         ip: String,
         port: String,
         displayChannelId: String,
-        quality: String = "1080p-60fps"
+        quality: String = "1080p"
     ): String {
         val baseUrl = formatBaseUrl(ip, port, "https")
         return "$baseUrl/api/streams/live/$displayChannelId/$quality/mpegts"
@@ -76,7 +76,7 @@ object UrlBuilder {
         ip: String,
         port: String,
         displayChannelId: String,
-        quality: String = "1080p-60fps"
+        quality: String = "1080p"
     ): String {
         val baseUrl = formatBaseUrl(ip, port, "https")
         return "$baseUrl/api/streams/live/$displayChannelId/$quality/events"
@@ -88,7 +88,7 @@ object UrlBuilder {
         port: String,
         videoId: Int,
         sessionId: String,
-        quality: String = "1080p-60fps"
+        quality: String = "1080p"
     ): String {
         val baseUrl = formatBaseUrl(ip, port, "https")
         return "$baseUrl/api/streams/video/$videoId/$quality/playlist?session_id=$sessionId"
