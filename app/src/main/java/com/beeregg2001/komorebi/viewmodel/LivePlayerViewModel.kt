@@ -28,6 +28,7 @@ import com.beeregg2001.komorebi.common.UrlBuilder
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.BackendConfig
 import com.beeregg2001.komorebi.data.model.Channel
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.model.StreamSource
 import com.beeregg2001.komorebi.data.repository.LiveProvider
@@ -120,6 +121,12 @@ class LivePlayerViewModel @Inject constructor(
 
     private val _isQualitiesLoaded = MutableStateFlow(false)
     val isQualitiesLoaded: StateFlow<Boolean> = _isQualitiesLoaded.asStateFlow()
+
+    private val _availableEncodings = MutableStateFlow(StreamEncoding.DEFAULT_ENCODINGS)
+    val availableEncodings: StateFlow<List<StreamEncoding>> = _availableEncodings.asStateFlow()
+
+    private val _isEncodingsLoaded = MutableStateFlow(true)
+    val isEncodingsLoaded: StateFlow<Boolean> = _isEncodingsLoaded.asStateFlow()
 
     private val _currentLogoUrl = MutableStateFlow<String>("")
     val currentLogoUrl: StateFlow<String> = _currentLogoUrl.asStateFlow()
@@ -275,6 +282,12 @@ class LivePlayerViewModel @Inject constructor(
                 SettingsRepository.LIVE_QUALITY,
                 qualityValue
             )
+        }
+    }
+
+    fun saveLiveEncoding(encodingValue: String) {
+        viewModelScope.launch {
+            settingsRepository.saveString(SettingsRepository.LIVE_ENCODING, encodingValue)
         }
     }
 
@@ -463,6 +476,13 @@ class LivePlayerViewModel @Inject constructor(
                     _mainPlayer.value = newPlayer
 
                     val config = settingsRepository.getBackendConfig(source)
+                    val konomiTvQuality = if (source == StreamSource.KONOMITV) {
+                        quality.getKonomiTvValue(
+                            StreamEncoding.fromValue(settingsRepository.liveEncoding.first())
+                        )
+                    } else {
+                        quality.value
+                    }
                     val streamUrl = if (source == StreamSource.EDCB && !isEdcbDirect) {
                         withContext(Dispatchers.Main) {
                             _mainSseDetail.value = "トランスコード開始を待機中..."
@@ -473,7 +493,7 @@ class LivePlayerViewModel @Inject constructor(
                     } else buildStreamUrl(
                         channel,
                         source,
-                        quality,
+                        konomiTvQuality,
                         config,
                         mainTsDataSourceFactory,
                         requestHeaders
@@ -486,7 +506,7 @@ class LivePlayerViewModel @Inject constructor(
                             startMainSse(
                                 uiContext,
                                 channel.displayChannelId,
-                                quality.value,
+                                konomiTvQuality,
                                 config,
                                 requestHeaders
                             )
@@ -555,6 +575,13 @@ class LivePlayerViewModel @Inject constructor(
                     _dualPlayer.value = newDualPlayer
 
                     val config = settingsRepository.getBackendConfig(source)
+                    val konomiTvQuality = if (source == StreamSource.KONOMITV) {
+                        quality.getKonomiTvValue(
+                            StreamEncoding.fromValue(settingsRepository.liveEncoding.first())
+                        )
+                    } else {
+                        quality.value
+                    }
                     val streamUrl = if (source == StreamSource.EDCB && !isEdcbDirect) {
                         withContext(Dispatchers.Main) {
                             _dualSseDetail.value = "トランスコード開始を待機中..."
@@ -565,7 +592,7 @@ class LivePlayerViewModel @Inject constructor(
                     } else buildStreamUrl(
                         channel,
                         source,
-                        quality,
+                        konomiTvQuality,
                         config,
                         dualTsDataSourceFactory,
                         requestHeaders
@@ -578,7 +605,7 @@ class LivePlayerViewModel @Inject constructor(
                             startDualSse(
                                 uiContext,
                                 channel.displayChannelId,
-                                quality.value,
+                                konomiTvQuality,
                                 config,
                                 requestHeaders
                             )
@@ -636,7 +663,7 @@ class LivePlayerViewModel @Inject constructor(
     private fun buildStreamUrl(
         channel: Channel,
         source: StreamSource,
-        quality: StreamQuality,
+        quality: String,
         config: BackendConfig,
         factory: TsReadExDataSourceFactory,
         requestHeaders: Map<String, String> = emptyMap()
@@ -703,7 +730,7 @@ class LivePlayerViewModel @Inject constructor(
                 config.ip,
                 config.port,
                 channel.displayChannelId,
-                quality.value
+                quality
             )
         }
     }

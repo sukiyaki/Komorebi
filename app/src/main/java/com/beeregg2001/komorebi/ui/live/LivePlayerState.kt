@@ -9,6 +9,7 @@ import androidx.compose.ui.input.key.type
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.model.AudioMode
 import com.beeregg2001.komorebi.data.model.Channel
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.model.StreamSource
 import kotlinx.coroutines.CoroutineScope
@@ -34,6 +35,12 @@ class LivePlayerState(
     val context: Context
 ) {
     var currentAudioMode by mutableStateOf(AudioMode.MAIN)
+    var currentEncoding by mutableStateOf(
+        StreamEncoding(
+            label = "読み込み中...",
+            value = ""
+        )
+    )
 
     // ★ 修正: initialQuality 引数に頼らず、空の状態で安全に初期化する
     var currentQuality by mutableStateOf(

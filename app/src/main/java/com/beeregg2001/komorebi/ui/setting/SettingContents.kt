@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.AppStrings
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.viewmodel.PostRecordingBatch
@@ -630,7 +631,9 @@ fun ConnectionSettingsContent(
 
 @Composable
 fun PlaybackSettingsContent(
+    liveEncoding: String,
     liveQ: String,
+    videoEncoding: String,
     videoQ: String,
     liveSub: String,
     videoSub: String,
@@ -639,7 +642,9 @@ fun PlaybackSettingsContent(
     uiMode: String,
     autoCmSkip: String,
     availableQualities: List<StreamQuality>,
+    liveEncodingR: FocusRequester,
     liveR: FocusRequester,
+    videoEncodingR: FocusRequester,
     videoR: FocusRequester,
     liveSubR: FocusRequester,
     videoSubR: FocusRequester,
@@ -648,7 +653,9 @@ fun PlaybackSettingsContent(
     uiModeR: FocusRequester,
     autoCmSkipR: FocusRequester,
     sidebarR: FocusRequester,
+    onLiveEncoding: () -> Unit,
     onL: () -> Unit,
+    onVideoEncoding: () -> Unit,
     onV: () -> Unit,
     onLiveSub: () -> Unit,
     onVideoSub: () -> Unit,
@@ -667,6 +674,18 @@ fun PlaybackSettingsContent(
         )
         SettingsSection(AppStrings.SETTINGS_SECTION_QUALITY) {
             SettingItem(
+                AppStrings.SETTINGS_ITEM_LIVE_ENCODING,
+                StreamEncoding.fromValue(liveEncoding).label,
+                Icons.Default.LiveTv,
+                modifier = Modifier
+                    .focusRequester(liveEncodingR)
+                    .focusProperties {
+                        left = sidebarR
+                        up = FocusRequester.Cancel
+                        down = liveR
+                    },
+                onClick = { onClick(liveEncodingR); onLiveEncoding() })
+            SettingItem(
                 AppStrings.SETTINGS_ITEM_LIVE_QUALITY,
                 availableQualities.find { it.value == liveQ }?.label
                     ?: availableQualities.firstOrNull()?.label ?: "Unknown",
@@ -675,10 +694,22 @@ fun PlaybackSettingsContent(
                     .focusRequester(liveR)
                     .focusProperties {
                         left = sidebarR
-                        up = FocusRequester.Cancel
-                        down = videoR
+                        up = liveEncodingR
+                        down = videoEncodingR
                     },
                 onClick = { onClick(liveR); onL() })
+            SettingItem(
+                AppStrings.SETTINGS_ITEM_VIDEO_ENCODING,
+                StreamEncoding.fromValue(videoEncoding).label,
+                Icons.Default.VideoFile,
+                modifier = Modifier
+                    .focusRequester(videoEncodingR)
+                    .focusProperties {
+                        left = sidebarR
+                        up = liveR
+                        down = videoR
+                    },
+                onClick = { onClick(videoEncodingR); onVideoEncoding() })
             SettingItem(
                 AppStrings.SETTINGS_ITEM_VIDEO_QUALITY,
                 availableQualities.find { it.value == videoQ }?.label
@@ -688,7 +719,7 @@ fun PlaybackSettingsContent(
                     .focusRequester(videoR)
                     .focusProperties {
                         left = sidebarR
-                        up = liveR
+                        up = videoEncodingR
                         down = liveSubR
                     },
                 onClick = { onClick(videoR); onV() })

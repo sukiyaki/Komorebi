@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -39,8 +40,11 @@ import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.safeRequestFocusWithRetry
 import com.beeregg2001.komorebi.data.model.AudioMode
 import kotlinx.coroutines.delay
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
+
+private fun StreamEncoding.subMenuLabel(): String = label.replace(" (", "\n(")
 
 /** サブメニュー内の遷移先と、遷移前後のフォーカス位置を保持する。 */
 @Stable
@@ -82,15 +86,18 @@ fun VideoTopSubMenuUI(
     currentAudioMode: AudioMode,
     currentSpeed: Float,
     isSubtitleEnabled: Boolean,
+    currentEncoding: StreamEncoding = StreamEncoding.DEFAULT_ENCODINGS.first(),
     currentQuality: StreamQuality,
     isCommentEnabled: Boolean,
     isLCropEnabled: Boolean,
     isAutoCmSkipEnabled: Boolean,
+    availableEncodings: List<StreamEncoding> = StreamEncoding.DEFAULT_ENCODINGS,
     availableQualities: List<StreamQuality>,
     focusRequester: FocusRequester,
     onAudioToggle: () -> Unit,
     onSpeedToggle: () -> Unit,
     onSubtitleToggle: () -> Unit,
+    onEncodingSelect: (StreamEncoding) -> Unit = {},
     onQualitySelect: (StreamQuality) -> Unit,
     onCommentToggle: () -> Unit,
     onLCropToggle: () -> Unit,
@@ -104,6 +111,8 @@ fun VideoTopSubMenuUI(
 ) {
     val colors = KomorebiTheme.colors
     var selectedCategory by remember { mutableStateOf<SubMenuCategory?>(null) }
+    val encodingButtonRequester = remember { FocusRequester() }
+    val encodingListRequester = remember { FocusRequester() }
     val qualityButtonRequester = remember { FocusRequester() }
     val qualityListRequester = remember { FocusRequester() }
 
@@ -116,10 +125,14 @@ fun VideoTopSubMenuUI(
     }
 
     LaunchedEffect(selectedCategory) {
-        if (selectedCategory == SubMenuCategory.QUALITY) {
+        if (selectedCategory == SubMenuCategory.ENCODING || selectedCategory == SubMenuCategory.QUALITY) {
             delay(100)
             try {
-                qualityListRequester.requestFocus()
+                if (selectedCategory == SubMenuCategory.ENCODING) {
+                    encodingListRequester.requestFocus()
+                } else {
+                    qualityListRequester.requestFocus()
+                }
             } catch (e: Exception) {
             }
         }
@@ -141,9 +154,14 @@ fun VideoTopSubMenuUI(
                             keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ESCAPE)
                 ) {
                     if (selectedCategory != null) {
+                        val targetRequester = if (selectedCategory == SubMenuCategory.ENCODING) {
+                            encodingButtonRequester
+                        } else {
+                            qualityButtonRequester
+                        }
                         selectedCategory = null
                         try {
-                            qualityButtonRequester.requestFocus()
+                            targetRequester.requestFocus()
                         } catch (e: Exception) {
                         }
                         true
@@ -221,6 +239,25 @@ fun VideoTopSubMenuUI(
                     enabled = isCommentSupported // ★ 適用
                 )
                 VideoMenuTileItem(
+                    title = "エンコード",
+                    icon = Icons.Default.HighQuality,
+                    subtitle = currentEncoding.subMenuLabel(),
+                    onClick = {
+                        if (isQualitySupported) {
+                            selectedCategory =
+                                if (selectedCategory == SubMenuCategory.ENCODING) null else SubMenuCategory.ENCODING
+                        }
+                    },
+                    modifier = Modifier
+                        .focusRequester(encodingButtonRequester)
+                        .focusProperties {
+                            if (selectedCategory != SubMenuCategory.ENCODING) down =
+                                FocusRequester.Cancel
+                        },
+                    contentColor = colors.textPrimary,
+                    enabled = isQualitySupported
+                )
+                VideoMenuTileItem(
                     title = "画質",
                     icon = Icons.Default.HighQuality,
                     subtitle = currentQuality.label,
@@ -239,6 +276,61 @@ fun VideoTopSubMenuUI(
                     contentColor = colors.textPrimary,
                     enabled = isQualitySupported && availableQualities.isNotEmpty() // ★ 適用
                 )
+            }
+
+            AnimatedVisibility(
+                visible = selectedCategory == SubMenuCategory.ENCODING,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(16.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(400.dp)
+                            .height(2.dp)
+                            .background(colors.textPrimary.copy(alpha = 0.2f))
+                    )
+                    Spacer(Modifier.height(16.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 32.dp, vertical = 8.dp)
+                    ) {
+                        availableEncodings.forEach { encoding ->
+                            val isSelected = currentEncoding == encoding
+                            VideoMenuTileItem(
+                                title = encoding.subMenuLabel(),
+                                icon = if (isSelected) Icons.Default.CheckCircle else Icons.Default.Settings,
+                                subtitle = if (isSelected) "選択中" else "",
+                                onClick = {
+                                    onEncodingSelect(encoding)
+                                    selectedCategory = null
+                                    try {
+                                        encodingButtonRequester.requestFocus()
+                                    } catch (e: Exception) {
+                                    }
+                                },
+                                width = 240.dp,
+                                height = 100.dp,
+                                modifier = Modifier
+                                    .then(
+                                        if (isSelected) Modifier.focusRequester(
+                                            encodingListRequester
+                                        ) else Modifier
+                                    )
+                                    .focusProperties {
+                                        up = encodingButtonRequester
+                                        down = FocusRequester.Cancel
+                                    },
+                                contentColor = colors.textPrimary
+                            )
+                        }
+                    }
+                }
             }
 
             AnimatedVisibility(
@@ -344,13 +436,15 @@ fun VideoMenuTileItem(
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                textAlign = if ('\n' in title) TextAlign.Center else TextAlign.Start
             )
             if (subtitle.isNotEmpty()) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                    color = LocalContentColor.current.copy(alpha = 0.7f)
+                    color = LocalContentColor.current.copy(alpha = 0.7f),
+                    textAlign = if ('\n' in subtitle) TextAlign.Center else TextAlign.Start
                 )
             }
         }
@@ -367,14 +461,17 @@ fun AnimatedVisibilityScope.ModernVideoSettingsOverlay(
     currentAudioMode: AudioMode,
     currentSpeed: Float,
     isSubtitleEnabled: Boolean,
+    currentEncoding: StreamEncoding = StreamEncoding.DEFAULT_ENCODINGS.first(),
     currentQuality: StreamQuality,
     isCommentEnabled: Boolean,
     isLCropEnabled: Boolean,
     isAutoCmSkipEnabled: Boolean,
+    availableEncodings: List<StreamEncoding> = StreamEncoding.DEFAULT_ENCODINGS,
     availableQualities: List<StreamQuality>,
     onAudioToggle: () -> Unit,
     onSpeedToggle: () -> Unit,
     onSubtitleToggle: () -> Unit,
+    onEncodingSelect: (StreamEncoding) -> Unit = {},
     onQualitySelect: (StreamQuality) -> Unit,
     onCommentToggle: () -> Unit,
     onLCropToggle: () -> Unit,
@@ -391,6 +488,8 @@ fun AnimatedVisibilityScope.ModernVideoSettingsOverlay(
     val navigationState = rememberSubMenuNavigationState<SubMenuCategory>()
     val selectedCategory = navigationState.destination
     val initialFocusRequester = remember { FocusRequester() }
+    val encodingButtonRequester = remember { FocusRequester() }
+    val encodingListRequester = remember { FocusRequester() }
     val qualityButtonRequester = remember { FocusRequester() }
     val qualityListRequester = remember { FocusRequester() }
 
@@ -448,7 +547,11 @@ fun AnimatedVisibilityScope.ModernVideoSettingsOverlay(
                 Icon(Icons.Default.Settings, contentDescription = null, tint = colors.textPrimary)
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = if (selectedCategory == SubMenuCategory.QUALITY) "画質の選択" else "プレイヤー設定",
+                    text = when (selectedCategory) {
+                        SubMenuCategory.ENCODING -> "エンコード方式の選択"
+                        SubMenuCategory.QUALITY -> "画質の選択"
+                        else -> "プレイヤー設定"
+                    },
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = colors.textPrimary
@@ -483,6 +586,22 @@ fun AnimatedVisibilityScope.ModernVideoSettingsOverlay(
                             icon = Icons.Default.Subtitles,
                             onClick = onSubtitleToggle,
                             enabled = isSubtitleSupported // ★ 適用
+                        )
+                        ModernSettingRow(
+                            title = "エンコード方式",
+                            value = currentEncoding.subMenuLabel(),
+                            icon = Icons.Default.HighQuality,
+                            onClick = {
+                                if (isQualitySupported && availableEncodings.isNotEmpty()) {
+                                    navigationState.navigateTo(
+                                        destination = SubMenuCategory.ENCODING,
+                                        returnFocusRequester = encodingButtonRequester,
+                                        destinationFocusRequester = encodingListRequester
+                                    )
+                                }
+                            },
+                            modifier = Modifier.focusRequester(encodingButtonRequester),
+                            enabled = isQualitySupported && availableEncodings.isNotEmpty()
                         )
                         ModernSettingRow(
                             title = "画質",
@@ -523,6 +642,28 @@ fun AnimatedVisibilityScope.ModernVideoSettingsOverlay(
                             highlight = isLCropEnabled,
                             enabled = true
                         )
+                    }
+                } else if (category == SubMenuCategory.ENCODING) {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        availableEncodings.forEach { encoding ->
+                            val isSelected = currentEncoding == encoding
+                            ModernSettingRow(
+                                title = encoding.subMenuLabel(),
+                                value = if (isSelected) "✓" else "",
+                                icon = if (isSelected) Icons.Default.CheckCircle else Icons.Default.Settings,
+                                onClick = {
+                                    onEncodingSelect(encoding)
+                                    navigationState.navigateBack()
+                                },
+                                highlight = isSelected,
+                                modifier = if (isSelected) Modifier.focusRequester(
+                                    encodingListRequester
+                                ) else Modifier
+                            )
+                        }
                     }
                 } else if (category == SubMenuCategory.QUALITY) {
                     Column(
@@ -604,12 +745,14 @@ fun ModernSettingRow(
                 text = title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                textAlign = if ('\n' in title) TextAlign.End else TextAlign.Start
             )
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isFocused) Color.Unspecified else colors.textSecondary
+                color = if (isFocused) Color.Unspecified else colors.textSecondary,
+                textAlign = if ('\n' in value) TextAlign.End else TextAlign.Start
             )
         }
     }

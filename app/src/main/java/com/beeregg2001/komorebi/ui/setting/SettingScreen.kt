@@ -30,6 +30,7 @@ import androidx.tv.material3.*
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.SettingsRepository
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.components.GlobalToast
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
@@ -139,6 +140,8 @@ fun SettingsScreen(
                 FocusRequester()
             ), // 1: Connection
             listOf(
+                FocusRequester(),
+                FocusRequester(),
                 FocusRequester(),
                 FocusRequester(),
                 FocusRequester(),
@@ -591,7 +594,9 @@ fun SettingsScreen(
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 1 }
 
                         2 -> PlaybackSettingsContent(
+                            prefs.liveEncoding,
                             prefs.liveQuality,
+                            prefs.videoEncoding,
                             prefs.videoQuality,
                             prefs.liveSubtitleDefault,
                             prefs.videoSubtitleDefault,
@@ -608,7 +613,23 @@ fun SettingsScreen(
                             itemFocusRequesters[2][5],
                             itemFocusRequesters[2][6],
                             itemFocusRequesters[2][7],
+                            itemFocusRequesters[2][8],
+                            itemFocusRequesters[2][9],
                             categoryFocusRequesters[2],
+                            {
+                                uiState.activeDialog = SettingDialogState.Selection(
+                                    AppStrings.DIALOG_ENCODING_TITLE,
+                                    StreamEncoding.DEFAULT_ENCODINGS.map { it.label to it.value },
+                                    prefs.liveEncoding
+                                ) {
+                                    scope.launch {
+                                        repository.saveString(
+                                            SettingsRepository.LIVE_ENCODING,
+                                            it
+                                        )
+                                    }
+                                }
+                            },
                             {
                                 uiState.activeDialog = SettingDialogState.Selection(
                                     AppStrings.DIALOG_QUALITY_TITLE,
@@ -619,6 +640,20 @@ fun SettingsScreen(
                                     scope.launch {
                                         repository.saveString(
                                             SettingsRepository.LIVE_QUALITY,
+                                            it
+                                        )
+                                    }
+                                }
+                            },
+                            {
+                                uiState.activeDialog = SettingDialogState.Selection(
+                                    AppStrings.DIALOG_ENCODING_TITLE,
+                                    StreamEncoding.DEFAULT_ENCODINGS.map { it.label to it.value },
+                                    prefs.videoEncoding
+                                ) {
+                                    scope.launch {
+                                        repository.saveString(
+                                            SettingsRepository.VIDEO_ENCODING,
                                             it
                                         )
                                     }
