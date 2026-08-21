@@ -4,9 +4,9 @@
   "releaseNotes": "",
   "apkUrl": "",
   "beta": {
-    "versionCode": 10001,
-    "versionName": "1.1.0-beta7-sukiyaki.1",
-    "releaseNotes": "## What's Changed\n* Build: add custom distribution flavor by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/1\n* feat: KonomiTV の Basic 認証に対応 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/2\n* fix: Modern VideoPlayer サブメニューのフォーカス消失を修正 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/3\n\n## New Contributors\n* @mega2nd made their first contribution in https://github.com/sukiyaki/Komorebi/pull/1\n\n**Full Changelog**: https://github.com/sukiyaki/Komorebi/commits/v1.1.0-beta7-sukiyaki.1",
-    "apkUrl": "https://github.com/sukiyaki/Komorebi/releases/download/v1.1.0-beta7-sukiyaki.1/Komorebi-1.1.0-beta7-sukiyaki.1.apk"
+    "versionCode": 17002,
+    "versionName": "1.1.0-beta7-sukiyaki.2",
+    "releaseNotes": "## What's Changed\n* feat: KonomiTV の H.265/HEVC エンコード選択に対応 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/4\n* fix: デフォルトの画質設定を 1080p に変更 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/5\n\n\n**Full Changelog**: https://github.com/sukiyaki/Komorebi/compare/v1.1.0-beta7-sukiyaki.1...v1.1.0-beta7-sukiyaki.2",
+    "apkUrl": "https://github.com/sukiyaki/Komorebi/releases/download/v1.1.0-beta7-sukiyaki.2/Komorebi-1.1.0-beta7-sukiyaki.2.apk"
   }
 }
