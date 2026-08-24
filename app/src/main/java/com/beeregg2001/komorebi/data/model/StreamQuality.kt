@@ -7,29 +7,28 @@ data class StreamQuality(
     val label: String,
     val value: String,
     val isRawTs: Boolean = false, // 生TS(TS-Live!)かどうかを判定するフラグ
-    val konomiTvAvcValue: String? = null,
     val konomiTvHevcValue: String? = null
 ) {
     /** 選択されたエンコード方式に対応する KonomiTV API の画質パラメータ。 */
     fun getKonomiTvValue(encoding: StreamEncoding): String {
-        return if (encoding.value == "h265") {
-            checkNotNull(konomiTvHevcValue)
-        } else {
-            checkNotNull(konomiTvAvcValue)
+        return when (encoding.value) {
+            "h264" -> value
+            "h265" -> checkNotNull(konomiTvHevcValue)
+            else -> value
         }
     }
 
     companion object {
         // KonomiTVなどのバックエンド用のデフォルト（固定）リスト
         val DEFAULT_QUALITIES = listOf(
-            StreamQuality("1080p (60fps)", "1080p-60fps", konomiTvAvcValue = "1080p-60fps", konomiTvHevcValue = "1080p-60fps-hevc"),
-            StreamQuality("1080p", "1080p", konomiTvAvcValue = "1080p", konomiTvHevcValue = "1080p-hevc"),
-            StreamQuality("810p", "810p", konomiTvAvcValue = "810p", konomiTvHevcValue = "810p-hevc"),
-            StreamQuality("720p", "720p", konomiTvAvcValue = "720p", konomiTvHevcValue = "720p-hevc"),
-            StreamQuality("540p", "540p", konomiTvAvcValue = "540p", konomiTvHevcValue = "540p-hevc"),
-            StreamQuality("480p", "480p", konomiTvAvcValue = "480p", konomiTvHevcValue = "480p-hevc"),
-            StreamQuality("360p", "360p", konomiTvAvcValue = "360p", konomiTvHevcValue = "360p-hevc"),
-            StreamQuality("240p", "240p", konomiTvAvcValue = "240p", konomiTvHevcValue = "240p-hevc")
+            StreamQuality("1080p (60fps)", "1080p-60fps", konomiTvHevcValue = "1080p-60fps-hevc"),
+            StreamQuality("1080p", "1080p", konomiTvHevcValue = "1080p-hevc"),
+            StreamQuality("810p", "810p", konomiTvHevcValue = "810p-hevc"),
+            StreamQuality("720p", "720p", konomiTvHevcValue = "720p-hevc"),
+            StreamQuality("540p", "540p", konomiTvHevcValue = "540p-hevc"),
+            StreamQuality("480p", "480p", konomiTvHevcValue = "480p-hevc"),
+            StreamQuality("360p", "360p", konomiTvHevcValue = "360p-hevc"),
+            StreamQuality("240p", "240p", konomiTvHevcValue = "240p-hevc")
         )
 
         /**
