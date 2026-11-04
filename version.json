@@ -4,9 +4,9 @@
   "releaseNotes": "",
   "apkUrl": "",
   "beta": {
-    "versionCode": 17002,
-    "versionName": "1.1.0-beta7-sukiyaki.2",
-    "releaseNotes": "## What's Changed\n* feat: KonomiTV の H.265/HEVC エンコード選択に対応 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/4\n* fix: デフォルトの画質設定を 1080p に変更 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/5\n\n\n**Full Changelog**: https://github.com/sukiyaki/Komorebi/compare/v1.1.0-beta7-sukiyaki.1...v1.1.0-beta7-sukiyaki.2",
-    "apkUrl": "https://github.com/sukiyaki/Komorebi/releases/download/v1.1.0-beta7-sukiyaki.2/Komorebi-1.1.0-beta7-sukiyaki.2.apk"
+    "versionCode": 20003,
+    "versionName": "1.2.0-beta-sukiyaki.3",
+    "releaseNotes": "## What's Changed\n* feat: 1.2.0-beta に更新 by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/6\n* fix build by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/9\n* fix build by @mega2nd in https://github.com/sukiyaki/Komorebi/pull/10\n\n\n**Full Changelog**: https://github.com/sukiyaki/Komorebi/compare/v1.1.0-beta7-sukiyaki.2...v1.2.0-beta-sukiyaki.3",
+    "apkUrl": "https://github.com/sukiyaki/Komorebi/releases/download/v1.2.0-beta-sukiyaki.3/Komorebi-1.2.0-beta-sukiyaki.3.apk"
   }
 }
