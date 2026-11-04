@@ -35,12 +35,6 @@ class LivePlayerState(
     val context: Context
 ) {
     var currentAudioMode by mutableStateOf(AudioMode.MAIN)
-    var currentEncoding by mutableStateOf(
-        StreamEncoding(
-            label = "読み込み中...",
-            value = ""
-        )
-    )
 
     // ★ 修正: initialQuality 引数に頼らず、空の状態で安全に初期化する
     var currentQuality by mutableStateOf(
@@ -79,6 +73,12 @@ class LivePlayerState(
     var isBackKeyLongPressed by mutableStateOf(false)
 
     var previousStreamSource by mutableStateOf<StreamSource?>(null)
+
+    var currentEncoding by mutableStateOf(StreamEncoding.fromValue("h264"))
+    // ★ 追加: KonomiTVのoriginal画質選択中にデュアル表示/PiPへ入った際の自動ダウングレード用。
+    // originalはソース自体はKonomiTVのままなので、previousStreamSourceと違い画質とエンコードを退避・復元する
+    var previousEncoding by mutableStateOf<StreamEncoding?>(null)
+    var previousQuality by mutableStateOf<StreamQuality?>(null)
 
     var lCropEnabled by mutableStateOf(false)
     var lCropMode by mutableStateOf(LCropMode.HIDDEN)

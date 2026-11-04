@@ -73,10 +73,15 @@ fun SettingsScreen(
     val totalRecordCount by viewModel.totalRecordCount.collectAsState()
     val lastSyncedAt by viewModel.lastSyncedAt.collectAsState()
     val receiveBetaUpdates by viewModel.receiveBetaUpdates.collectAsState()
+    val updateCheckState by viewModel.updateCheckState.collectAsState()
+    val hasManuallyCheckedForUpdate by viewModel.hasManuallyCheckedForUpdate.collectAsState()
     val isValidatingGeminiApiKey by viewModel.isValidatingGeminiApiKey.collectAsState()
     val playerUiMode by viewModel.playerUiMode.collectAsState()
     val autoCmSkip by viewModel.autoCmSkip.collectAsState()
     val availableQualities by viewModel.availableQualities.collectAsState()
+    // ★ 追加: EPGStationはライブ・録画で画質の値空間が別なため、ライブ用の画質一覧を
+    // 別途取得する(詳細はSettingsViewModel.liveAvailableQualitiesのコメント参照)。
+    val liveAvailableQualities by viewModel.liveAvailableQualities.collectAsState()
     val groupedChannels by channelViewModel.groupedChannels.collectAsState()
     val flatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
@@ -122,6 +127,8 @@ fun SettingsScreen(
                 FocusRequester(),
                 FocusRequester(),
                 FocusRequester(),
+                FocusRequester(),
+                // ★ 追加: 「アップデートを確認する」用に1個増強
                 FocusRequester()
             ),
             listOf(
@@ -165,6 +172,8 @@ fun SettingsScreen(
                 FocusRequester(),
                 FocusRequester(),
                 FocusRequester(),
+                FocusRequester(),
+                // ★ 追加: 「UI の大きさ」用に1個増強
                 FocusRequester()
             ),
             listOf(FocusRequester(), FocusRequester(), FocusRequester(), FocusRequester()),
@@ -176,7 +185,8 @@ fun SettingsScreen(
                 FocusRequester()
             ),
             listOf(FocusRequester(), FocusRequester(), FocusRequester()),
-            listOf(FocusRequester())
+            // アプリ情報: 「テレビ再生能力」「オープンソースライセンス」の2項目
+            listOf(FocusRequester(), FocusRequester())
         )
     }
 
@@ -186,6 +196,14 @@ fun SettingsScreen(
     LaunchedEffect(uiState.selectedCategoryIndex) {
         if (initialFocusItemIndex == null || uiState.selectedCategoryIndex != initialCategoryIndex) {
             mainScrollState.scrollTo(0)
+        }
+        // ★ 追加: 「再生設定」タブ(画質選択ダイアログがある)を開いたタイミングで、
+        // EDCBのトランスコード画質リストを確実に再取得する。アプリ起動1.5秒後の
+        // 自動同期が失敗すると、以後リトライされずダイアログの選択肢が
+        // 「設定値」ベースの縮退リストに固定されてしまっていたため、
+        // ユーザーが実際にこの画面を見るタイミングで取り直す。
+        if (uiState.selectedCategoryIndex == 2) {
+            viewModel.refreshStreamQualities()
         }
     }
 
@@ -240,7 +258,17 @@ fun SettingsScreen(
                 .focusProperties { canFocus = !isDialogOpen }
                 .onKeyEvent {
                     if (it.type == KeyEventType.KeyDown && (it.nativeKeyEvent.keyCode == NativeKeyEvent.KEYCODE_BACK || it.nativeKeyEvent.keyCode == NativeKeyEvent.KEYCODE_ESCAPE)) {
-                        if (!uiState.isSidebarFocused) {
+                        if (isDialogOpen) {
+                            // ダイアログ・サブ画面を表示中に戻るキーがここへ来るのは、
+                            // フォーカスが手前の画面から裏(この設定画面)へ逃げてしまった場合。
+                            // そのまま設定画面を閉じるとホーム画面まで抜けてしまうため、
+                            // 「手前の画面を閉じる」動作に読み替える。
+                            //
+                            // 上の focusProperties { canFocus = !isDialogOpen } は本来この脱出を
+                            // 防ぐためのものだが、Compose 1.7 以降は focus properties が子孫へ
+                            // 継承されないため、裏の各要素はフォーカス可能なまま残っている。
+                            closeDialog()
+                        } else if (!uiState.isSidebarFocused) {
                             categoryFocusRequesters.getOrNull(uiState.selectedCategoryIndex)
                                 ?.safeRequestFocus("Back_To_Sidebar")
                         } else {
@@ -351,6 +379,10 @@ fun SettingsScreen(
                                 }
                             },
                             itemFocusRequesters[0][0],
+                            updateCheckState,
+                            hasManuallyCheckedForUpdate,
+                            { viewModel.checkForUpdatesManually() },
+                            itemFocusRequesters[0][5],
                             {
                                 uiState.activeDialog = SettingDialogState.ConfirmClear(
                                     "データベースの再構築",
@@ -509,6 +541,16 @@ fun SettingsScreen(
                                                 sanitizedInput
                                             )
 
+                                            "EPGStation (IPアドレス)" -> repository.saveString(
+                                                SettingsRepository.EPGSTATION_IP,
+                                                sanitizedInput
+                                            )
+
+                                            "EPGStation (ポート)" -> repository.saveString(
+                                                SettingsRepository.EPGSTATION_PORT,
+                                                sanitizedInput
+                                            )
+
                                             AppStrings.SETTINGS_INPUT_CF_CLIENT_ID -> repository.saveString(
                                                 SettingsRepository.CF_ACCESS_CLIENT_ID,
                                                 sanitizedInput
@@ -528,20 +570,28 @@ fun SettingsScreen(
                                         "Mirakurun (IPアドレス)" -> viewModel.updateMirakurunIp(
                                             input
                                         )
+
+                                        "EPGStation (IPアドレス)" -> viewModel.updateEpgStationIp(input)
+                                        "EPGStation (ポート)" -> viewModel.updateEpgStationPort(input)
                                     }
                                 }
                             },
                             {
                                 uiState.activeDialog = SettingDialogState.Selection(
                                     "バックエンドシステムの選択",
+                                    // ★ 修正: "Mirakurun (録画なし)" はまだ未対応のため選択肢から非表示にする。
+                                    // 既にこれを選択している既存ユーザーがいる可能性を考慮し、
+                                    // SettingsRepository側の判定・分岐(MIRAKURUN_ONLY)自体は残したまま、
+                                    // 新規に選べないようにするだけに留める。
                                     listOf(
                                         "KonomiTV" to "KONOMITV",
                                         "EDCB (EpgTimerSrv)" to "EDCB",
-                                        "Mirakurun (録画なし)" to "MIRAKURUN_ONLY"
+                                        "EPGStation" to "EPGSTATION"
                                     ),
                                     if (listOf(
                                             "KONOMITV",
                                             "EDCB",
+                                            "EPGSTATION",
                                             "MIRAKURUN_ONLY"
                                         ).any { it == prefs.backendType }
                                     ) prefs.backendType else "KONOMITV"
@@ -594,6 +644,7 @@ fun SettingsScreen(
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 1 }
 
                         2 -> PlaybackSettingsContent(
+                            prefs.backendType == "KONOMITV",
                             prefs.liveEncoding,
                             prefs.liveQuality,
                             prefs.videoEncoding,
@@ -605,6 +656,7 @@ fun SettingsScreen(
                             playerUiMode,
                             autoCmSkip,
                             availableQualities,
+                            liveAvailableQualities,
                             itemFocusRequesters[2][0],
                             itemFocusRequesters[2][1],
                             itemFocusRequesters[2][2],
@@ -617,10 +669,11 @@ fun SettingsScreen(
                             itemFocusRequesters[2][9],
                             categoryFocusRequesters[2],
                             {
+                                val liveAvailableEncodings = viewModel.getLiveAvailableEncodings()
                                 uiState.activeDialog = SettingDialogState.Selection(
                                     AppStrings.DIALOG_ENCODING_TITLE,
-                                    StreamEncoding.DEFAULT_ENCODINGS.map { it.label to it.value },
-                                    prefs.liveEncoding
+                                    liveAvailableEncodings.map { it.label to it.value },
+                                    StreamEncoding.fromValue(prefs.liveEncoding, liveAvailableEncodings).value
                                 ) {
                                     scope.launch {
                                         repository.saveString(
@@ -633,8 +686,8 @@ fun SettingsScreen(
                             {
                                 uiState.activeDialog = SettingDialogState.Selection(
                                     AppStrings.DIALOG_QUALITY_TITLE,
-                                    availableQualities.map { it.label to it.value },
-                                    if (availableQualities.any { it.value == prefs.liveQuality }) prefs.liveQuality else availableQualities.firstOrNull()?.value
+                                    liveAvailableQualities.map { it.label to it.value },
+                                    if (liveAvailableQualities.any { it.value == prefs.liveQuality }) prefs.liveQuality else liveAvailableQualities.firstOrNull()?.value
                                         ?: ""
                                 ) {
                                     scope.launch {
@@ -998,7 +1051,17 @@ fun SettingsScreen(
                                 ) { viewModel.updateTimeFormat(it) }
                             },
                             { viewModel.toggleHideSubChannels() },
-                            itemFocusRequesters[5].dropLast(1), itemFocusRequesters[5].last()
+                            {
+                                uiState.activeDialog = SettingDialogState.Selection(
+                                    AppStrings.SETTINGS_ITEM_UI_SCALE,
+                                    UI_SCALE_OPTIONS,
+                                    prefs.uiScale
+                                ) { viewModel.updateUiScale(it) }
+                            },
+                            // [0..3] が通常項目、[4] がサブチャンネル非表示、[5] が UI の大きさ
+                            itemFocusRequesters[5].take(4),
+                            itemFocusRequesters[5][4],
+                            itemFocusRequesters[5][5]
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 5 }
 
                         6 -> EpgSettingsContent(
@@ -1140,7 +1203,10 @@ fun SettingsScreen(
 
                         9 -> AppInfoContent(
                             { uiState.activeDialog = SettingDialogState.Licenses },
-                            itemFocusRequesters[9][0], categoryFocusRequesters[9]
+                            { uiState.activeDialog = SettingDialogState.DeviceCapabilities },
+                            itemFocusRequesters[9][0],
+                            itemFocusRequesters[9][1],
+                            categoryFocusRequesters[9]
                         ) { uiState.restoreFocusRequester = it; uiState.restoreCategoryIndex = 9 }
                     }
                     Spacer(Modifier.height(32.dp))
@@ -1188,6 +1254,7 @@ fun SettingsScreen(
                 { closeDialog() })
 
             is SettingDialogState.Licenses -> OpenSourceLicensesScreen(onBack = { closeDialog() })
+            is SettingDialogState.DeviceCapabilities -> DeviceCapabilitiesScreen(onBack = { closeDialog() })
             is SettingDialogState.GeminiSetup -> {
                 val localIp by viewModel.localIpAddress.collectAsState()
                 GeminiSetupDialog(

@@ -37,8 +37,8 @@ android {
         applicationId = "com.beeregg2001.Komorebi"
         minSdk = 24
         targetSdk = 34
-        versionCode = 17 // 数値を1つ上げる
-        versionName = "1.1.0-beta7"
+        versionCode = 20 // 数値を1つ上げる
+        versionName = "1.2.0-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -46,7 +46,7 @@ android {
         externalNativeBuild {
             cmake {
                 // 必要に応じて C++ コンパイラ引数を追加
-                cppFlags("-std=c++11")
+                cppFlags("-std=c++17")
             }
         }
         ndk {
@@ -113,6 +113,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.30.5"
         }
     }
 
@@ -130,6 +131,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // java.time などの Java 8+ API を Android 7.0(API 24)以降で利用する。
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
@@ -180,6 +183,8 @@ ksp {
 //}
 
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+
     // 1. Compose BOM を最新に近いバージョンに更新 (ここが最重要)
     // 2023.10.01 だと Tv-Foundation 1.0.0-alpha11 と互換性がありません
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))

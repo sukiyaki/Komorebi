@@ -2,6 +2,7 @@
 
 package com.beeregg2001.komorebi.ui.main
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,9 +32,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.beeregg2001.komorebi.ui.theme.ProvideUiScale
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import androidx.tv.material3.*
+import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.common.safeRequestFocus
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.util.UpdateState
@@ -53,71 +56,73 @@ fun AiTextInputDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        LaunchedEffect(Unit) {
-            delay(300)
-            runCatching { focusRequester.requestFocus() }
-        }
+        ProvideUiScale {
+            LaunchedEffect(Unit) {
+                delay(300)
+                runCatching { focusRequester.requestFocus() }
+            }
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.85f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                colors = SurfaceDefaults.colors(containerColor = colors.surface),
-                modifier = Modifier.width(500.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.85f)),
+                contentAlignment = Alignment.Center
             ) {
-                Column(modifier = Modifier.padding(32.dp)) {
-                    Text(
-                        text = "AIに質問・指示を入力",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = colors.textPrimary
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = SurfaceDefaults.colors(containerColor = colors.surface),
+                    modifier = Modifier.width(500.dp)
+                ) {
+                    Column(modifier = Modifier.padding(32.dp)) {
+                        Text(
+                            text = "AIに質問・指示を入力",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = colors.textPrimary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focusRequester)
-                            .background(
-                                colors.textPrimary.copy(alpha = 0.1f),
-                                RoundedCornerShape(8.dp)
-                            )
-                            .padding(16.dp),
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            color = colors.textPrimary,
-                            fontSize = 18.sp
-                        ),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
-                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
-                            onSubmit(text)
-                        }),
-                        cursorBrush = Brush.verticalGradient(listOf(colors.accent, colors.accent))
-                    )
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = text,
+                            onValueChange = { text = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester)
+                                .background(
+                                    colors.textPrimary.copy(alpha = 0.1f),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(16.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(
+                                color = colors.textPrimary,
+                                fontSize = 18.sp
+                            ),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
+                            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
+                                onSubmit(text)
+                            }),
+                            cursorBrush = Brush.verticalGradient(listOf(colors.accent, colors.accent))
+                        )
 
-                    Spacer(modifier = Modifier.height(24.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Button(
-                            onClick = onDismiss,
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.colors(
-                                containerColor = colors.textPrimary.copy(alpha = 0.1f),
-                                contentColor = colors.textPrimary
-                            )
-                        ) { Text("キャンセル") }
-                        Button(
-                            onClick = { onSubmit(text) },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.colors(
-                                containerColor = colors.accent,
-                                contentColor = if (colors.isDark) Color.Black else Color.White
-                            )
-                        ) { Text("送信") }
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Button(
+                                onClick = onDismiss,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.colors(
+                                    containerColor = colors.textPrimary.copy(alpha = 0.1f),
+                                    contentColor = colors.textPrimary
+                                )
+                            ) { Text("キャンセル") }
+                            Button(
+                                onClick = { onSubmit(text) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.colors(
+                                    containerColor = colors.accent,
+                                    contentColor = if (colors.isDark) Color.Black else Color.White
+                                )
+                            ) { Text("送信") }
+                        }
                     }
                 }
             }
@@ -282,11 +287,33 @@ fun SyncProgressIndicator(recordViewModel: RecordViewModel, modifier: Modifier =
     }
 }
 
+/**
+ * 録画一覧の同期に失敗したことを知らせるダイアログ。
+ *
+ * 同期エラーの原因はバックエンドへ接続できないことがほとんどで、その場合は接続設定を
+ * 見直すのが解決への近道になる。閉じてもビデオタブを開くたびに同期が走って同じエラーが
+ * 出てしまうため、**このダイアログから直接設定画面へ移動できる**ようにしている。
+ *
+ * フォーカスについて:
+ * このダイアログは画面の上に Box で重ねているだけで、裏のホーム画面の要素はフォーカス可能な
+ * まま残っている。各ボタンの focusProperties で外向きの移動を封じないとフォーカスが裏へ抜け、
+ * ダイアログを操作できなくなる。万一抜けた場合に備えて BackHandler も置いている。
+ */
 @Composable
-fun SyncErrorDialog(errorMessage: String, onRetry: () -> Unit, onDismiss: () -> Unit) {
+fun SyncErrorDialog(
+    errorMessage: String,
+    onRetry: () -> Unit,
+    onGoToSettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
     val colors = KomorebiTheme.colors
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { delay(300); focusRequester.safeRequestFocus("SyncError") }
+    val closeRequester = remember { FocusRequester() }
+    val settingsRequester = remember { FocusRequester() }
+    val retryRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { delay(300); retryRequester.safeRequestFocus("SyncError") }
+
+    // フォーカスが裏へ抜けてしまった場合でも閉じられるようにする最終防衛線。
+    BackHandler { onDismiss() }
 
     Box(
         modifier = Modifier
@@ -297,7 +324,8 @@ fun SyncErrorDialog(errorMessage: String, onRetry: () -> Unit, onDismiss: () -> 
         Surface(
             shape = RoundedCornerShape(16.dp),
             colors = SurfaceDefaults.colors(containerColor = colors.surface),
-            modifier = Modifier.width(420.dp)
+            // ボタンが3つ並ぶため、以前(420dp)より広げている
+            modifier = Modifier.width(520.dp)
         ) {
             Column(
                 modifier = Modifier.padding(32.dp),
@@ -326,8 +354,32 @@ fun SyncErrorDialog(errorMessage: String, onRetry: () -> Unit, onDismiss: () -> 
                             containerColor = colors.textPrimary.copy(alpha = 0.1f),
                             contentColor = colors.textPrimary
                         ),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(closeRequester)
+                            .focusProperties {
+                                left = FocusRequester.Cancel
+                                right = settingsRequester
+                                up = FocusRequester.Cancel
+                                down = FocusRequester.Cancel
+                            }
                     ) { Text("閉じる") }
+                    Button(
+                        onClick = onGoToSettings,
+                        colors = ButtonDefaults.colors(
+                            containerColor = colors.textPrimary.copy(alpha = 0.1f),
+                            contentColor = colors.textPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(settingsRequester)
+                            .focusProperties {
+                                left = closeRequester
+                                right = retryRequester
+                                up = FocusRequester.Cancel
+                                down = FocusRequester.Cancel
+                            }
+                    ) { Text(AppStrings.GO_TO_SETTINGS_SHORT) }
                     Button(
                         onClick = onRetry,
                         colors = ButtonDefaults.colors(
@@ -336,86 +388,14 @@ fun SyncErrorDialog(errorMessage: String, onRetry: () -> Unit, onDismiss: () -> 
                         ),
                         modifier = Modifier
                             .weight(1f)
-                            .focusRequester(focusRequester)
+                            .focusRequester(retryRequester)
+                            .focusProperties {
+                                left = settingsRequester
+                                right = FocusRequester.Cancel
+                                up = FocusRequester.Cancel
+                                down = FocusRequester.Cancel
+                            }
                     ) { Text("再実行") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun UpdateDialog(
-    versionName: String,
-    releaseNotes: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val colors = KomorebiTheme.colors
-    val focusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) { delay(100); focusRequester.requestFocus() }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.8f))
-            .zIndex(200f),
-        contentAlignment = Alignment.Center
-    ) {
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            colors = SurfaceDefaults.colors(
-                containerColor = colors.surface,
-                contentColor = colors.textPrimary
-            ),
-            modifier = Modifier.width(420.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    imageVector = Icons.Default.SystemUpdate,
-                    contentDescription = null,
-                    tint = colors.accent,
-                    modifier = Modifier.size(48.dp)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "アップデートのお知らせ",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "最新バージョン ($versionName) が利用可能です。\n\n$releaseNotes\n\nアップデート開始後、Androidのシステム画面が開きますので、「インストール」または「更新」を選択してください。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.textSecondary
-                )
-                Spacer(modifier = Modifier.height(32.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.colors(
-                            containerColor = colors.textPrimary.copy(alpha = 0.1f),
-                            contentColor = colors.textPrimary
-                        ),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("後で") }
-                    Button(
-                        onClick = onConfirm,
-                        colors = ButtonDefaults.colors(
-                            containerColor = colors.accent,
-                            contentColor = if (colors.isDark) Color.Black else Color.White
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .focusRequester(focusRequester)
-                    ) { Text("今すぐ更新") }
                 }
             }
         }

@@ -136,7 +136,7 @@ object AppStrings {
     const val TOAST_SOURCE_SWITCHED = "ソース切替"
     const val TOAST_SUBTITLE_CHANGED = "字幕: %s"
     const val TOAST_COMMENT_CHANGED = "実況: %s"
-    const val TOAST_ENCODING_CHANGED = "エンコード方式: %s"
+    const val TOAST_ENCODING_CHANGED = "エンコード: %s"
     const val TOAST_QUALITY_CHANGED = "画質: %s"
 
     // 各種状態・ラベル
@@ -148,11 +148,7 @@ object AppStrings {
     const val PROGRAM_INFO_NONE = "番組情報なし"
     const val STATUS_RECORDING = "録画中"
 
-    // 二画面・モック関連
-    const val DUAL_MOCK_LEFT = "左画面\n(720p上限 モック)"
-    const val DUAL_MOCK_RIGHT_SELECTING = "チャンネル選択中...\n(720p上限 モック)"
-    const val DUAL_MOCK_RIGHT_SELECTED = "右画面\n(720p上限 モック)"
-    const val DUAL_MOCK_RIGHT_UNSELECTED = "右画面\n（未選択）\n(720p上限 モック)"
+    // 二画面関連
     const val DUAL_RIGHT_SELECTING = "チャンネル選択中..."
     const val DUAL_RIGHT_UNSELECTED = "（未選択）"
 
@@ -238,9 +234,9 @@ object AppStrings {
 
     // 再生設定
     const val SETTINGS_SECTION_QUALITY = "画質設定"
-    const val SETTINGS_ITEM_LIVE_ENCODING = "ライブ視聴エンコード方式"
+    const val SETTINGS_ITEM_LIVE_ENCODING = "ライブ視聴エンコード"
     const val SETTINGS_ITEM_LIVE_QUALITY = "ライブ視聴画質"
-    const val SETTINGS_ITEM_VIDEO_ENCODING = "録画視聴エンコード方式"
+    const val SETTINGS_ITEM_VIDEO_ENCODING = "録画視聴エンコード"
     const val SETTINGS_ITEM_VIDEO_QUALITY = "録画視聴画質"
     const val SETTINGS_SECTION_SUBTITLE_AUDIO = "字幕・音声設定"
     const val SETTINGS_ITEM_LIVE_SUBTITLE_DEFAULT = "ライブ視聴 デフォルト字幕"
@@ -255,7 +251,7 @@ object AppStrings {
     const val DIALOG_LAYER_COMMENT_TOP = "実況コメントを上に表示"
     const val DIALOG_LAYER_SUBTITLE_TOP = "字幕を上に表示"
     const val DIALOG_QUALITY_TITLE = "視聴画質"
-    const val DIALOG_ENCODING_TITLE = "エンコード方式"
+    const val DIALOG_ENCODING_TITLE = "エンコード"
 
     // 音声出力設定
     const val SETTINGS_SECTION_AUDIO_OUTPUT = "音声出力"
@@ -359,4 +355,8 @@ object AppStrings {
 
     // アプリ情報
     const val SETTINGS_ITEM_OSS_LICENSES = "オープンソースライセンス"
+    const val SETTINGS_ITEM_DEVICE_CAPABILITIES = "テレビ再生能力"
+
+    // 表示設定
+    const val SETTINGS_ITEM_UI_SCALE = "UI の大きさ"
 }

@@ -23,19 +23,23 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.*
+import com.beeregg2001.komorebi.ColdStartDiag
 import com.beeregg2001.komorebi.data.mapper.KonomiDataMapper
 import com.beeregg2001.komorebi.data.model.*
 import com.beeregg2001.komorebi.ui.epg.EpgNavigationContainer
 import com.beeregg2001.komorebi.ui.reserve.ReserveListScreen
 import com.beeregg2001.komorebi.viewmodel.*
+import com.beeregg2001.komorebi.common.requestFocusWhenReady
 import com.beeregg2001.komorebi.common.safeRequestFocus
-import com.beeregg2001.komorebi.common.safeRequestFocusWithRetry
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalTime
@@ -43,6 +47,61 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private const val TAG = "HomeLauncher"
+
+/**
+ * タブのコンテンツが「表示できる状態になった」ことを通知するヘルパー。
+ *
+ * 以前は各タブで一律 `delay(500)`〜`delay(800)` を挟んでから準備完了を通知していた。
+ * これはコンテンツが描画される前にローディング表示が消えてしまう「一瞬の空表示」を
+ * 避けるための対症療法だったが、実際のデータ取得がどれだけ速く終わっても
+ * 必ずその時間だけ待たされるため、起動直後や設定画面から戻った直後の
+ * ローディング表示が不必要に長引く原因になっていた。
+ *
+ * ここでは固定時間の代わりに、
+ *  1. そのタブが表示に必要とするデータが揃ったか（[isDataAvailable]）
+ *  2. 揃った後、実際に1フレーム描画されたか（[withFrameNanos]）
+ * の2点を条件にする。データが空のまま（録画0件・予約0件など）でも
+ * ローディング表示に固定されないよう、[fallbackTimeoutMs] の保険も併用する。
+ *
+ * この関数自体が独立したリコンポーズ範囲になるため、内部での状態購読が
+ * 巨大な HomeLauncherScreen 全体のリコンポーズを誘発しない点も重要。
+ */
+@Composable
+private fun TabReadyNotifier(
+    isDataAvailable: Boolean,
+    fallbackTimeoutMs: Long = 1000L,
+    onReady: () -> Unit
+) {
+    LaunchedEffect(isDataAvailable) {
+        if (isDataAvailable) {
+            // データ到達直後はまだレイアウト・描画が済んでいない。
+            // 次フレームまで待ってから通知することで、固定 delay に頼らずに
+            // 「中身が出る前にローディングが消える」ちらつきを防ぐ。
+            withFrameNanos { }
+            onReady()
+        }
+    }
+
+    // データが最後まで空のままでも操作可能にするための保険。
+    LaunchedEffect(Unit) {
+        delay(fallbackTimeoutMs)
+        onReady()
+    }
+}
+
+/**
+ * 録画予約タブ用。予約一覧の読み込み状態に連動させる。
+ * `isLoading` の購読をこの小さな関数の中に閉じ込め、
+ * HomeLauncherScreen 全体のリコンポーズを誘発しないようにしている。
+ */
+@Composable
+private fun ReserveTabReadyNotifier(
+    reserveViewModel: ReserveViewModel,
+    onReady: () -> Unit
+) {
+    val isReserveLoading by reserveViewModel.isLoading.collectAsState()
+    TabReadyNotifier(isDataAvailable = !isReserveLoading, onReady = onReady)
+}
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
@@ -113,8 +172,23 @@ fun HomeLauncherScreen(
     hasActivePlayer: Boolean = false,
     onReturnToPlayerClick: () -> Unit = {},
     aiFocusReturnTick: Int = 0,
-    onAiReturnConsumed: () -> Unit = {}
+    onAiReturnConsumed: () -> Unit = {},
+    // ★ 追加: AIコンシェルジュパネルが前面に出ている間は true。
+    // パネルはMainRootDialogs側の別オーバーレイとして描画されホーム画面はツリーに残り続けるため、
+    // フォーカス自動復帰処理と戻るキー処理をこの画面側でも明示的に止める必要がある。
+    isAiConciergeOpen: Boolean = false,
+    // 画面全体を覆う前面オーバーレイ(設定画面・AIコンシェルジュ・同期エラーダイアログ)が
+    // 表示中かどうか。対象の列挙は MainRootState.isForegroundOverlayVisible 側に一元化して
+    // あるため、この画面はオーバーレイの種類を知る必要がない。
+    isForegroundOverlayVisible: Boolean = false,
+    // フルスクリーンのプレイヤーが手前に出ている間は true。
+    // ホーム画面はプレイヤー表示中も(スクロール位置とフォーカスを保つため)
+    // Compose ツリーに残り続けるので、見えていない間の定期通信を明示的に止める。
+    isPlayerActiveFullScreen: Boolean = false
 ) {
+    // ★ 追加(診断用): コールドブート計測用。詳細はhandleUiReady定義箇所を参照。
+    var hasLoggedFirstUiReady by remember { mutableStateOf(false) }
+
     val ui = rememberHomeLauncherState(
         initialTabIndex,
         channelViewModel,
@@ -142,11 +216,29 @@ fun HomeLauncherScreen(
 
     val safeTabIndex = ui.selectedTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
 
+    // ★ 修正: 以前は `isFullScreen(...) && !hasActivePlayer` としていたため、
+    // ミニプレイヤー(PiP)表示中は設定画面などのオーバーレイが開いていても
+    // isFullScreenMode が false のままになっていた。
+    // その結果、設定画面が前面に出ているのに背面のホーム画面がフォーカス迷子検知を
+    // 走らせ、設定画面からフォーカスを奪い返してしまい操作不能になっていた。
+    // ミニプレイヤーの例外はプレイヤー起因の判定にだけ効かせる(isFullScreen側で処理)。
     val isFullScreenMode = ui.isFullScreen(
         selectedChannel, selectedProgram, epgSelectedProgram,
-        isSettingsOpen, isRecordListOpen, isReserveOverlayOpen
-    ) && !hasActivePlayer
+        isSettingsOpen, isRecordListOpen, isReserveOverlayOpen,
+        hasActivePlayer = hasActivePlayer
+    )
 
+    // 前面オーバーレイ表示中はタブ列の表示可否(isFullScreenMode)自体は変えず
+    // (AIコンシェルジュパネル等は画面の一部を覆うオーバーレイのため、タブ列を消す
+    // 見た目の変更は不要)、フォーカス自動復帰・戻るキー処理だけを止めるためのフラグ。
+    // 動かしたままだとオーバーレイからフォーカスを奪い返し、表示されたまま操作できない
+    // 状態になる。対象の列挙は MainRootState.isForegroundOverlayVisible 側に一元化済み。
+    val isFocusSuspended = isFullScreenMode || isForegroundOverlayVisible
+
+    // ★ 追加: PR #103でプレイヤー表示中もこのホーム画面自体が破棄されず常駐するようになった影響で、
+    // プレイヤーを開く直前にフォーカスしていた項目の論理フォーカスが残留し、プレイヤーから戻った際の
+    // 復元用requestFocus()を阻害することがある。明示的にクリアしてから要求し直す。
+    val focusManager = LocalFocusManager.current
     val returnPlayerFocusRequester = remember { FocusRequester() }
     val displayFlatChannels = remember(groupedChannels) { groupedChannels.values.flatten() }
 
@@ -171,25 +263,23 @@ fun HomeLauncherScreen(
         }
     }
 
-    // =====================================================================================
-    // ★ 究極の軽量化ロジック: デバウンス・レンダリング（Debounce Rendering）
-    // 連打中は画面を構築せず、指が止まってから60ms後に初めてコンテンツを描画する。
-    // 裏側のタブは完全に破棄するため、フォーカスの迷子や競合は物理的に発生しません。
-    // =====================================================================================
-    var activeRenderIndex by remember { mutableIntStateOf(safeTabIndex) }
-
-    LaunchedEffect(safeTabIndex) {
-        if (activeRenderIndex != safeTabIndex) {
-            delay(60) // 連打中はキャンセルされ続け、指が止まった時だけここを通過する
-            activeRenderIndex = safeTabIndex
-        }
-    }
+    // 切替中にコンテンツをいったん全て消すと、現在のフォーカスノードも
+    // 破棄されて迷子になるため、選択中のタブを常に同じフレームで描画する。
+    val activeRenderIndex = safeTabIndex
 
     var lastHomeRefreshTime by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(activeRenderIndex) {
+    LaunchedEffect(activeRenderIndex, isPlayerActiveFullScreen) {
         val currentLabel = tabs.getOrNull(activeRenderIndex) ?: "ホーム"
         ui.isCurrentTabContentReady = false
+
+        // プレイヤーが前面に出ている間、ホーム画面は見えていない。
+        // ここで定期取得を走らせると、再生と帯域・CPU を奪い合って
+        // 再生も UI 操作ももたつく原因になる。
+        if (isPlayerActiveFullScreen) {
+            channelViewModel.stopPolling()
+            return@LaunchedEffect
+        }
 
         if (currentLabel == "ホーム") {
             channelViewModel.startPolling()
@@ -203,6 +293,31 @@ fun HomeLauncherScreen(
         } else {
             channelViewModel.stopPolling()
         }
+    }
+
+    // タブ列の右側にある設定ボタン・再生中ボタンにフォーカスがあるかどうか。
+    // タブ切替時の遅延フォーカス要求がこれらのボタンからフォーカスを奪わないように使う。
+    var isSettingsFocused by remember { mutableStateOf(false) }
+    var isReturnPlayerFocused by remember { mutableStateOf(false) }
+
+    // 遅延実行されるフォーカス要求から参照するため、値を確定させず毎回状態を読み直す。
+    val isHeaderActionFocused = { isSettingsFocused || isReturnPlayerFocused }
+
+    // タブの表示ツリーを再構築した直後は、切替前のフォーカスノードが破棄されて
+    // フォーカスが消えることがある。新しいタブを必ず操作可能な状態に戻す。
+    LaunchedEffect(activeRenderIndex) {
+        // ビデオタブのオーバーレイから戻ってきた直後は、開いたボタンへの復帰を
+        // VideoTabContent 側が担当している。ここでタブ列へ引き戻してはいけない。
+        if (homeViewModel.lastVideoOverlayCaller != null) return@LaunchedEffect
+
+        // 固定で160ms待ってから要求していたが、タブ列は既に配置済みなので待つ必要はない。
+        // 配置前だった場合もフレーム単位で再試行する。
+        ui.tabFocusRequesters.getOrNull(activeRenderIndex)?.requestFocusWhenReady(
+            tag = "HomeTab_Rendered",
+            maxFrames = 12,
+            // 設定ボタン等へ意図的に移動した後は、タブへ引き戻さない
+            shouldContinue = { activeRenderIndex == safeTabIndex && !isHeaderActionFocused() }
+        )
     }
 
     LaunchedEffect(aiFocusReturnTick) {
@@ -223,13 +338,13 @@ fun HomeLauncherScreen(
 
                 "プロ野球" -> {
                     ui.contentFirstItemRequesters.getOrNull(safeTabIndex)
-                        ?.safeRequestFocusWithRetry("BaseballAiReturn")
+                        ?.requestFocusWhenReady("BaseballAiReturn", maxFrames = 15)
                     onAiReturnConsumed()
                 }
 
                 else -> {
                     ui.tabFocusRequesters.getOrNull(safeTabIndex)
-                        ?.safeRequestFocusWithRetry("FallbackAiReturn")
+                        ?.requestFocusWhenReady("FallbackAiReturn")
                     onAiReturnConsumed()
                 }
             }
@@ -238,7 +353,8 @@ fun HomeLauncherScreen(
 
     LaunchedEffect(isReturningFromPlayer) {
         if (isReturningFromPlayer && !isFullScreenMode) {
-            ui.safeHouseRequester.safeRequestFocusWithRetry("SafeHouse_Return")
+            focusManager.clearFocus(force = true)
+            ui.safeHouseRequester.requestFocusWhenReady("SafeHouse_Return")
             delay(150)
 
             val currentTabName = tabs.getOrNull(safeTabIndex)
@@ -259,10 +375,15 @@ fun HomeLauncherScreen(
     }
 
     LaunchedEffect(Unit) {
-        if (ui.selectedTabIndex == 0) {
-            homeViewModel.refreshHomeData()
-            channelViewModel.fetchChannels()
-        }
+        // ホームタブのデータ取得 (refreshHomeData / チャンネル一覧) は、この直上の
+        // LaunchedEffect(activeRenderIndex, isPlayerActiveFullScreen) が初回コンポーズ時に
+        // 必ず実行している。ここで重ねて呼ぶと、起動直後の一番重いタイミングで
+        // 同じ通信・同じ EPG 集計が二重に走ることになるため呼ばない。
+        // ビデオタブのオーバーレイから戻ってきた場合も、この画面は破棄・再生成されるため
+        // ここが初回コンポーズとして実行される。タブ列へのチケットを発行すると
+        // VideoTabContent 側の復帰と競合するので降りる。
+        if (homeViewModel.lastVideoOverlayCaller != null) return@LaunchedEffect
+
         if (!isReturningFromPlayer && !isFullScreenMode) {
             delay(300)
             ticketManager.issue(HomeFocusTicket.TAB_BAR)
@@ -271,7 +392,17 @@ fun HomeLauncherScreen(
 
     LaunchedEffect(isFullScreenMode) {
         if (!isFullScreenMode && !isReturningFromPlayer) {
+            // ビデオタブで全画面オーバーレイ(録画リスト / SMBライブラリ)を開いていた場合は、
+            // 開いたボタンへの復帰を VideoTabContent 側が担当する(設計方針 E)。
+            // ここでタブ列へのチケットを発行すると、そちらと競合して結局タブ列へ飛ばされる。
+            //
+            // 判定は delay の前に行う。VideoTabContent 側は300msより早く復帰を終えて
+            // 識別子を null に戻すため、delay の後に読むと「登録が無かった」ことになってしまう。
+            val isVideoOverlayReturn = homeViewModel.lastVideoOverlayCaller != null
+
             delay(300)
+            if (isVideoOverlayReturn) return@LaunchedEffect
+
             val currentTabName = tabs.getOrNull(safeTabIndex)
             if (currentTabName == "録画予約") {
             } else if (currentTabName == "ホーム") {
@@ -299,7 +430,7 @@ fun HomeLauncherScreen(
                 },
                 escapeToSafeHouse = {
                     scope.launch {
-                        ui.safeHouseRequester.safeRequestFocusWithRetry("Back_SafeHouse")
+                        ui.safeHouseRequester.requestFocusWhenReady("Back_SafeHouse")
                     }
                 }
             )
@@ -309,9 +440,15 @@ fun HomeLauncherScreen(
     LaunchedEffect(ticketManager.currentTicket, ticketManager.issueTime) {
         when (ticketManager.currentTicket) {
             HomeFocusTicket.TAB_BAR -> {
-                delay(200)
+                // 固定で200ms待ってからチケットの有効性を確認していたが、フレーム単位の
+                // 再試行では shouldContinue が毎フレーム同じ判定をするため事前確認は不要。
                 ui.tabFocusRequesters.getOrNull(safeTabIndex)
-                    ?.safeRequestFocusWithRetry("HomeTicket_TAB_BAR")
+                    ?.requestFocusWhenReady(
+                        "HomeTicket_TAB_BAR",
+                        shouldContinue = {
+                            ticketManager.currentTicket == HomeFocusTicket.TAB_BAR
+                        }
+                    )
                 ticketManager.consume(HomeFocusTicket.TAB_BAR)
 
                 val currentTabName = tabs.getOrNull(safeTabIndex)
@@ -321,9 +458,10 @@ fun HomeLauncherScreen(
             }
 
             HomeFocusTicket.CONTENT_TOP -> {
-                delay(150)
+                // コンテンツ先頭の項目は LazyRow/LazyColumn の実体化を待つため、
+                // タブ列より少し長めにフレームを見る。
                 ui.contentFirstItemRequesters.getOrNull(safeTabIndex)
-                    ?.safeRequestFocusWithRetry("HomeTicket_CONTENT_TOP")
+                    ?.requestFocusWhenReady("HomeTicket_CONTENT_TOP", maxFrames = 15)
                 ticketManager.consume(HomeFocusTicket.CONTENT_TOP)
             }
 
@@ -337,6 +475,133 @@ fun HomeLauncherScreen(
         }
     }
 
+    // タブ移動では先に表示対象を切り替える。表示ツリーの再構築前に
+    // FocusRequesterへ要求すると、要求先が未接続で失敗することがあるため、
+    // 再構築後にフォーカス要求をリトライする。
+    var pendingTabFocusJob by remember { mutableStateOf<Job?>(null) }
+    var launcherHasFocus by remember { mutableStateOf(false) }
+
+    // 十字キーを高速に操作すると、フォーカス中のカードが破棄された拍子に
+    // LazyColumn/LazyRow の focusGroup()（見た目もキー処理も持たないコンテナ）自身へ
+    // フォーカスが落ちることがある。この状態では画面上にフォーカス枠が一切描画されず、
+    // 十字キーも効かないため、アプリが操作不能になったように見える。
+    // コンテナが持つフォーカスは hasFocus では検知できないため、
+    // 「コンテンツ領域直下のフォーカス対象そのものが Active（isFocused）」を迷子のサインとして扱う。
+    // タブ列や設定ボタンは正当なフォーカス先なので、判定対象はコンテンツ領域だけに限定する。
+    var contentFocusStranded by remember { mutableStateOf(false) }
+
+    // 番組表はグリッド全体が1つのフォーカス対象（Canvas描画）であり、
+    // そこにフォーカスがあるのは正常な状態なので迷子判定から除外する。
+    val isStrandedDetectable = tabs.getOrNull(safeTabIndex) != "番組表"
+
+    LaunchedEffect(
+        launcherHasFocus,
+        contentFocusStranded,
+        ui.selectedTabIndex,
+        isFocusSuspended,
+        isReturningFromPlayer,
+        isStrandedDetectable
+    ) {
+        // ★ 修正: isFullScreenModeだけではAIコンシェルジュパネル表示中を検知できず、
+        // パネル側へフォーカスが移った直後にこのループがフォーカスを奪い返してしまっていた
+        // (パネルは表示されたままキー操作だけ背面のホーム画面に効く操作不能状態になる不具合)。
+        if (isFocusSuspended || isReturningFromPlayer) return@LaunchedEffect
+
+        val isLost = { !launcherHasFocus || (contentFocusStranded && isStrandedDetectable) }
+        if (!isLost()) return@LaunchedEffect
+
+        Log.i(
+            "KomorebiFocus",
+            "フォーカス迷子を検知（hasFocus=$launcherHasFocus stranded=$contentFocusStranded）。復帰を試みます"
+        )
+
+        // 迷子はユーザーから見れば「操作不能」なので、待たずに即座に復帰を試みる。
+        // 以前は 120ms 待ってから試し、失敗すると 220ms 待って再試行していたため
+        // 最悪1秒以上フォーカス枠が消えたままだった。
+        //
+        // 復帰条件が揺れている間だけ試す。isFocusSuspended / isReturningFromPlayer は
+        // この LaunchedEffect のキーにも含まれているので、変化すれば effect 自体が
+        // 中断・再起動される。ここでの判定はその取りこぼしに対する保険。
+        val shouldKeepTrying = { !isFocusSuspended && !isReturningFromPlayer && isLost() }
+
+        // 要求が通ってもフォーカス状態の反映は次フレームなので、1回あたりの試行を
+        // 終えたらフレームを1つ進めて isLost() を読み直す。
+        repeat(3) {
+            if (!shouldKeepTrying()) return@LaunchedEffect
+
+            val tabIndex = ui.selectedTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
+            // 直前までコンテンツを操作していたなら、コンテンツ先頭へ戻す方が違和感が少ない。
+            val restoredToContent = !ui.topNavHasFocus &&
+                    ui.contentFirstItemRequesters.getOrNull(tabIndex)
+                        ?.requestFocusWhenReady(
+                            tag = "HomeFocusRecovery_Content",
+                            maxFrames = 6,
+                            shouldContinue = shouldKeepTrying
+                        ) == true
+
+            if (!restoredToContent) {
+                ui.tabFocusRequesters.getOrNull(tabIndex)
+                    ?.requestFocusWhenReady(
+                        tag = "HomeFocusRecovery_Tab",
+                        shouldContinue = shouldKeepTrying
+                    )
+            }
+            withFrameNanos { }
+        }
+    }
+
+    fun moveTabByDpad(direction: Key): Boolean {
+        val currentIndex = ui.selectedTabIndex.coerceIn(0, (tabs.size - 1).coerceAtLeast(0))
+        val targetIndex = when (direction) {
+            Key.DirectionRight -> currentIndex + 1
+            Key.DirectionLeft -> currentIndex - 1
+            else -> return false
+        }
+        if (targetIndex !in tabs.indices) return false
+
+        ticketManager.cancelForUserNavigation()
+        pendingTabFocusJob?.cancel()
+        ui.selectedTabIndex = targetIndex
+        ui.onTabSelected(
+            targetIndex,
+            tabs,
+            onTabChange,
+            homeViewModel,
+            channelViewModel,
+            recordViewModel,
+            reserveViewModel
+        )
+
+        pendingTabFocusJob = scope.launch {
+            ui.tabFocusRequesters[targetIndex].requestFocusWhenReady(
+                tag = "HomeTab_Dpad",
+                shouldContinue = { ui.selectedTabIndex == targetIndex && !isHeaderActionFocused() }
+            )
+        }
+        return true
+    }
+
+    // 設定ボタン(または再生中ボタン)へ移る際は、直前のタブ移動で仕込まれた
+    // 遅延フォーカス要求を破棄する。残しておくと、移った直後にタブへフォーカスを
+    // 引き戻してしまう。
+    //
+    // ★ 修正: このメソッドは「最後のタブで右キーを押した」際の着地先を決める目的で
+    // 3箇所(このComposable内のonKeyEvent/onPreviewKeyEventハンドラ)から呼ばれている。
+    // これらはComposeの標準的なフォーカス探索(focusProperties { right = ... })より先に
+    // キーイベントを消費して自前でフォーカス遷移させているため、focusProperties側だけを
+    // hasActivePlayer対応させても実際には効かなかった。
+    // 再生中(PiPから復帰可能な状態)の場合は、設定ボタンではなく「再生中」ボタンへ
+    // 着地させる(再生中ボタン自体のfocusProperties.rightで設定ボタンへは行ける)。
+    fun focusSettingsButton(tag: String) {
+        pendingTabFocusJob?.cancel()
+        ticketManager.cancelForUserNavigation()
+        if (hasActivePlayer) {
+            returnPlayerFocusRequester.safeRequestFocus(tag)
+        } else {
+            ui.settingsFocusRequester.safeRequestFocus(tag)
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Box(
             modifier = Modifier
@@ -344,9 +609,65 @@ fun HomeLauncherScreen(
                 .graphicsLayer { alpha = 0f }
                 .focusRequester(ui.safeHouseRequester)
                 .focusable()
+                // 画面切替中にフォーカスが退避ノードへ残っても、最初の十字キー操作で
+                // 画面上の操作対象へ復旧させる。退避ノードには通常の隣接フォーカスが
+                // 存在しないため、ここで処理しないとアプリが固まったように見える。
+                .onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+
+                    when (event.key) {
+                        Key.DirectionRight -> {
+                            if (ui.selectedTabIndex < tabs.lastIndex) {
+                                moveTabByDpad(Key.DirectionRight)
+                            } else {
+                                focusSettingsButton("SafeHouse_Dpad_Settings")
+                            }
+                            true
+                        }
+
+                        Key.DirectionLeft -> {
+                            if (ui.selectedTabIndex > 0) moveTabByDpad(Key.DirectionLeft)
+                            else ui.tabFocusRequesters[ui.selectedTabIndex].safeRequestFocus("SafeHouse_Dpad_Tab")
+                            true
+                        }
+
+                        Key.DirectionUp -> {
+                            scope.launch {
+                                ui.tabFocusRequesters[ui.selectedTabIndex].requestFocusWhenReady(
+                                    tag = "SafeHouse_Dpad_Tab"
+                                )
+                            }
+                            true
+                        }
+
+                        Key.DirectionDown -> {
+                            scope.launch {
+                                if (ui.isCurrentTabContentReady) {
+                                    ui.contentFirstItemRequesters[ui.selectedTabIndex]
+                                        .requestFocusWhenReady(
+                                            tag = "SafeHouse_Dpad_Content",
+                                            maxFrames = 15
+                                        )
+                                } else {
+                                    ui.tabFocusRequesters[ui.selectedTabIndex]
+                                        .requestFocusWhenReady(
+                                            tag = "SafeHouse_Dpad_Tab"
+                                        )
+                                }
+                            }
+                            true
+                        }
+
+                        else -> false
+                    }
+                }
         )
 
-        Column(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onFocusChanged { launcherHasFocus = it.hasFocus }
+            ) {
             if (!isFullScreenMode) {
                 Row(
                     modifier = Modifier
@@ -355,6 +676,26 @@ fun HomeLauncherScreen(
                         .padding(top = 8.dp, start = 40.dp, end = 40.dp)
                         .onFocusChanged { ui.topNavHasFocus = it.hasFocus }
                         .onPreviewKeyEvent { event ->
+                            // ★ 修正: AIコンシェルジュパネル表示中、まだフォーカスが背面のタブ列に
+                            // 迷い込んでいるレース区間で左右キー(タブ切替)やBACKキーをここで消費すると、
+                            // パネルの裏でタブが切り替わったり、パネル側のBackHandlerに戻るキーが
+                            // 届かずパネルが閉じなくなったりする。パネル表示中はここでは一切処理しない。
+                            if (isAiConciergeOpen) return@onPreviewKeyEvent false
+
+                            // 左右キーによるタブ切替は、タブ列にフォーカスがあるときだけ行う。
+                            // 設定ボタン・再生中ボタンにフォーカスがある状態で拾ってしまうと、
+                            // ボタンから離れる操作をしていないのにタブだけが切り替わってしまう。
+                            if (event.type == KeyEventType.KeyDown && !isHeaderActionFocused()) {
+                                if ((event.key == Key.DirectionRight || event.key == Key.DirectionLeft) &&
+                                    moveTabByDpad(event.key)
+                                ) {
+                                    return@onPreviewKeyEvent true
+                                }
+                                if (event.key == Key.DirectionRight && ui.selectedTabIndex == tabs.lastIndex) {
+                                    focusSettingsButton("HomeTab_Dpad_Settings")
+                                    return@onPreviewKeyEvent true
+                                }
+                            }
                             if (event.type == KeyEventType.KeyDown && (event.key == Key.Back || event.key == Key.Escape)) {
                                 ui.handleBackNavigation(
                                     onTabChange = onTabChange,
@@ -363,7 +704,7 @@ fun HomeLauncherScreen(
                                     requestTopNavFocus = { ticketManager.issue(HomeFocusTicket.TAB_BAR) },
                                     escapeToSafeHouse = {
                                         scope.launch {
-                                            ui.safeHouseRequester.safeRequestFocusWithRetry(
+                                            ui.safeHouseRequester.requestFocusWhenReady(
                                                 "Back_SafeHouse"
                                             )
                                         }
@@ -397,6 +738,7 @@ fun HomeLauncherScreen(
                             Tab(
                                 selected = safeTabIndex == index,
                                 onFocus = {
+                                    ticketManager.cancelForUserNavigation()
                                     if (!isReturningFromPlayer) {
                                         ui.selectedTabIndex = index
                                         ui.onTabSelected(
@@ -412,16 +754,48 @@ fun HomeLauncherScreen(
                                     ui.topNavHasFocus = true
                                 },
                                 modifier = Modifier
+                                    .onKeyEvent { event ->
+                                        if (event.type != KeyEventType.KeyDown) {
+                                            return@onKeyEvent false
+                                        }
+                                        if (event.key == Key.DirectionRight || event.key == Key.DirectionLeft) {
+                                            if (moveTabByDpad(event.key)) {
+                                                true
+                                            } else if (event.key == Key.DirectionRight && index == tabs.lastIndex) {
+                                                focusSettingsButton("HomeTab_Dpad_Settings")
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        } else if (event.key == Key.DirectionDown && index == ui.selectedTabIndex) {
+                                            // 表示準備フラグの更新を待たず、実体化した先頭アイテムへ
+                                            // リトライ付きで遷移する。高速切替直後でもDefault探索に
+                                            // フォーカスを逃がさない。
+                                            scope.launch {
+                                                ui.contentFirstItemRequesters.getOrNull(index)
+                                                    ?.requestFocusWhenReady(
+                                                        tag = "HomeTab_Dpad_Content",
+                                                        maxFrames = 15,
+                                                        shouldContinue = {
+                                                            ui.selectedTabIndex == index &&
+                                                                activeRenderIndex == index
+                                                        }
+                                                    )
+                                            }
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    }
                                     .focusRequester(
                                         ui.tabFocusRequesters.getOrNull(index)
                                             ?: FocusRequester.Default
                                     )
                                     .focusProperties {
-                                        down =
-                                            if (safeTabIndex == index && ui.isCurrentTabContentReady)
-                                                ui.contentFirstItemRequesters.getOrNull(index)
-                                                    ?: FocusRequester.Default
-                                            else FocusRequester.Default
+                                        down = if (safeTabIndex == index) {
+                                            ui.contentFirstItemRequesters.getOrNull(index)
+                                                ?: FocusRequester.Default
+                                        } else FocusRequester.Default
 
                                         canFocus = !(title == "番組表" && ui.isEpgJumping)
 
@@ -429,6 +803,19 @@ fun HomeLauncherScreen(
                                         if (index == 0) {
                                             left = FocusRequester.Cancel
                                         }
+                                        right =
+                                            if (index < tabs.lastIndex) {
+                                                ui.tabFocusRequesters.getOrNull(index + 1)
+                                                    ?: FocusRequester.Default
+                                            } else if (hasActivePlayer) {
+                                                // ★ 修正: 再生中(PiPから復帰可能な状態)は、最後のタブから
+                                                // 右へ進むと「再生中」ボタンに止まるべきだが、常に設定ボタンを
+                                                // 指していたため、設定ボタンを一度通過してから左キーで
+                                                // 戻らないと「再生中」ボタンを選択できない不具合があった。
+                                                returnPlayerFocusRequester
+                                            } else {
+                                                ui.settingsFocusRequester
+                                            }
                                     }) {
                                 Text(
                                     text = title,
@@ -450,6 +837,7 @@ fun HomeLauncherScreen(
                             onClick = onReturnToPlayerClick,
                             modifier = Modifier
                                 .focusRequester(returnPlayerFocusRequester)
+                                .onFocusChanged { isReturnPlayerFocused = it.isFocused }
                                 .focusProperties {
                                     left = ui.tabFocusRequesters.getOrNull(tabs.lastIndex)
                                         ?: FocusRequester.Default
@@ -485,6 +873,7 @@ fun HomeLauncherScreen(
                         onClick = { onSettingsToggle(true) },
                         modifier = Modifier
                             .focusRequester(ui.settingsFocusRequester)
+                            .onFocusChanged { isSettingsFocused = it.isFocused }
                             .focusProperties {
                                 val isEpgJumping =
                                     tabs.getOrNull(safeTabIndex) == "番組表" && ui.isEpgJumping
@@ -507,11 +896,21 @@ fun HomeLauncherScreen(
                 }
             }
 
-            Box(modifier = Modifier.weight(1f)) {
-                // ★ 完全に物理的に1つのタブのみを描画する（他はツリーから完全に消去され、フォーカス迷子が100%防がれる）
-                if (activeRenderIndex == safeTabIndex) {
-                    val currentTabLabel = tabs.getOrNull(activeRenderIndex) ?: "ホーム"
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    // isFocused=true は「コンテンツ領域直下のコンテナ自身がフォーカスを持った」状態。
+                    // 実際に操作できるカードは必ずこれより深い階層にあるため、迷子とみなす。
+                    .onFocusChanged { contentFocusStranded = it.isFocused }
+            ) {
+                val currentTabLabel = tabs.getOrNull(activeRenderIndex) ?: "ホーム"
                     val handleUiReady = {
+                        // ★ 追加(診断用): コールドブートで最初のタブの中身が実際に描画され、
+                        // 操作可能になった瞬間を計測する(以降のタブ切替では再発火させない)。
+                        if (!hasLoggedFirstUiReady) {
+                            hasLoggedFirstUiReady = true
+                            ColdStartDiag.mark("HomeLauncherScreen first tab content ready")
+                        }
                         onUiReady()
                         ui.isCurrentTabContentReady = true
                     }
@@ -533,7 +932,10 @@ fun HomeLauncherScreen(
                             },
                             onHistoryClick = { historyItem ->
                                 val programId = historyItem.program.id.toIntOrNull()
-                                val betterProgram = ui.recentRecordings.find { it.id == programId }
+                                // クリック時にのみ必要な値なので、composition では購読せず
+                                // ここで ViewModel の最新値を直接読み出す。
+                                val betterProgram =
+                                    recordViewModel.recentRecordings.value.find { it.id == programId }
                                 onProgramSelected(
                                     betterProgram?.copy(playbackPosition = historyItem.playback_position)
                                         ?: KonomiDataMapper.toDomainModel(historyItem)
@@ -594,7 +996,13 @@ fun HomeLauncherScreen(
                                 aiFocusReturnTick = if (currentTabLabel == "ライブ") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed
                             )
-                            LaunchedEffect(Unit) { delay(500); handleUiReady() }
+                            // ライブタブが表示に必要とするチャンネル一覧・グループ化データは
+                            // 呼び出し元で取得済みのものが groupedChannels として渡ってくる。
+                            // そのため取得完了を待つ必要はなく、揃っていれば次フレームで準備完了。
+                            TabReadyNotifier(
+                                isDataAvailable = groupedChannels.isNotEmpty(),
+                                onReady = handleUiReady
+                            )
                         }
 
                         "ビデオ" -> {
@@ -604,6 +1012,13 @@ fun HomeLauncherScreen(
                                 onShowAllRecordings = onShowAllRecordings,
                                 onShowSeriesList = onShowSeriesList,
                                 onShowSmbLibrary = onShowSmbLibrary,
+                                onRegisterOverlayCaller = {
+                                    homeViewModel.lastVideoOverlayCaller = it
+                                },
+                                overlayCaller = homeViewModel.lastVideoOverlayCaller,
+                                onOverlayCallerConsumed = {
+                                    homeViewModel.lastVideoOverlayCaller = null
+                                },
                                 openedSeriesTitle = ui.openedSeriesTitle,
                                 onOpenedSeriesTitleChange = { ui.openedSeriesTitle = it },
                                 tabFocusRequester = ui.tabFocusRequesters[activeRenderIndex],
@@ -619,7 +1034,16 @@ fun HomeLauncherScreen(
                                 aiFocusReturnTick = if (currentTabLabel == "ビデオ") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed
                             )
-                            LaunchedEffect(Unit) { delay(500); handleUiReady() }
+                            // 録画一覧は Room の Flow から供給され、ローカル DB からの
+                            // 読み出しなので待ち合わせが必要なほど遅くはない。
+                            // ここで recentRecordings を購読すると
+                            // 初回同期中の大量の Flow 発火で HomeLauncherScreen 全体が
+                            // 作り直されてしまう（HomeLauncherState のコメント参照）ため、
+                            // 購読はせず次フレームで準備完了とする。
+                            TabReadyNotifier(
+                                isDataAvailable = true,
+                                onReady = handleUiReady
+                            )
                         }
 
                         "番組表" -> {
@@ -650,7 +1074,16 @@ fun HomeLauncherScreen(
                                 onClearSearch = { epgViewModel.clearSearch() },
                                 timeFormat = timeFormat
                             )
-                            LaunchedEffect(Unit) { delay(800); handleUiReady() }
+                            // 番組表は Canvas でグリッド全体を描画するため他タブより重い。
+                            // 他タブが 500ms なのに対しここだけ 800ms だったのはその描画コストを
+                            // 固定時間で吸収しようとしたためだが、EPG の読み込み完了状態
+                            // (EpgUiState) を直接見れば実態に即した待ち合わせになる。
+                            // グリッド描画が重い分、保険のタイムアウトだけ長めに取る。
+                            TabReadyNotifier(
+                                isDataAvailable = ui.epgUiState is EpgUiState.Success,
+                                fallbackTimeoutMs = 1500L,
+                                onReady = handleUiReady
+                            )
                         }
 
                         "録画予約" -> {
@@ -674,7 +1107,11 @@ fun HomeLauncherScreen(
                                 aiFocusReturnTick = if (currentTabLabel == "録画予約") aiFocusReturnTick else 0,
                                 onAiReturnConsumed = onAiReturnConsumed
                             )
-                            LaunchedEffect(Unit) { delay(500); handleUiReady() }
+                            // 予約一覧の読み込み状態に連動させる。
+                            ReserveTabReadyNotifier(
+                                reserveViewModel = reserveViewModel,
+                                onReady = handleUiReady
+                            )
                         }
 
                         "プロ野球" -> {
@@ -692,11 +1129,13 @@ fun HomeLauncherScreen(
                                 onProgramClick = { onEpgProgramSelected(it) },
                                 topNavFocusRequester = ui.tabFocusRequesters[activeRenderIndex],
                                 contentFirstItemRequester = ui.contentFirstItemRequesters[activeRenderIndex],
-                                onUiReady = { delay(500); handleUiReady() },
+                                // 野球データ(favoriteBaseballGames)は呼び出し元で
+                                // 取得済みのものを渡しているため待ち合わせは不要。
+                                // 1フレーム描画されてから準備完了を通知する。
+                                onUiReady = { withFrameNanos { }; handleUiReady() },
                                 timeFormat = timeFormat
                             )
                         }
-                    }
                 }
             }
         }

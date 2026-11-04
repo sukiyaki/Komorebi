@@ -40,15 +40,14 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.itemContentType
 import androidx.paging.compose.itemKey
 import androidx.tv.material3.*
+import com.beeregg2001.komorebi.common.requestFocusWhenReady
 import com.beeregg2001.komorebi.common.safeRequestFocus
-import com.beeregg2001.komorebi.common.safeRequestFocusWithRetry
 import com.beeregg2001.komorebi.data.model.RecordedProgram
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
 import com.beeregg2001.komorebi.ui.video.FocusTicket
 import com.beeregg2001.komorebi.ui.video.FocusTicketManager
 import com.beeregg2001.komorebi.util.TitleNormalizer
 import com.beeregg2001.komorebi.viewmodel.SettingsViewModel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -72,9 +71,13 @@ fun RecordListContent(
     searchInputFocusRequester: FocusRequester,
     backButtonFocusRequester: FocusRequester,
     onProgramClick: (RecordedProgram, Double?) -> Unit,
-    onSeriesSearch: (String) -> Unit,
+    onSeriesSearch: (RecordedProgram) -> Unit,
     isDetailVisible: Boolean,
     onDetailStateChange: (Boolean) -> Unit,
+    // ★ 追加: サブメニューの開閉状態は呼び出し元（RecordListScreen）へホイストした。
+    // プレイヤー表示中も本画面が破棄されないため、遷移時に外から閉じられる必要がある。
+    isSideMenuOpen: Boolean,
+    onSideMenuStateChange: (Boolean) -> Unit,
     onBackPress: () -> Unit,
     ticketManager: FocusTicketManager,
     listState: LazyListState = rememberLazyListState(),
@@ -95,14 +98,24 @@ fun RecordListContent(
 
     var focusedProgram by remember { mutableStateOf<RecordedProgram?>(null) }
     var detailProgram by remember { mutableStateOf<RecordedProgram?>(null) }
-    var isSideMenuOpen by remember { mutableStateOf(false) }
     val backendType by settingViewModel.backendType.collectAsState()
+
+    // サブメニューが閉じられたら、詳細パネル用に保持していた番組も破棄する
+    LaunchedEffect(isSideMenuOpen) {
+        if (!isSideMenuOpen) detailProgram = null
+    }
 
     val itemFocusRequesters = remember { mutableMapOf<Int, FocusRequester>() }
     val menuFirstItemRequester = remember { FocusRequester() }
     val detailButtonFocusRequester = remember { FocusRequester() }
     val detailPanelFocusRequester = remember { FocusRequester() }
     val menuAnchorRequester = remember { FocusRequester() }
+
+    // サブメニューを閉じてから実フォーカスがリストへ戻るまでの数フレーム、
+    // 疑似ハイライト(isPersistentFocused)を消さずに保つためのフラグ。
+    // これが無いと「メニューが閉じた瞬間に無灯 → 実フォーカスが当たって再点灯」となり
+    // 項目が一瞬点滅して見える。
+    var isRestoringListFocus by remember { mutableStateOf(false) }
 
     val isAnyMenuOpen = isSideMenuOpen || isDetailVisible
     val menuTransitionState =
@@ -148,7 +161,7 @@ fun RecordListContent(
 
     LaunchedEffect(isDetailVisible) {
         if (isDetailVisible) {
-            delay(100); detailPanelFocusRequester.safeRequestFocus("DetailPanelOpened")
+            detailPanelFocusRequester.requestFocusWhenReady("DetailPanelOpened")
         }
     }
 
@@ -179,7 +192,9 @@ fun RecordListContent(
                     LaunchedEffect(ticketManager.currentTicket, ticketManager.issueTime) {
                         val ticket = ticketManager.currentTicket
                         if (ticket == FocusTicket.TARGET_ID && program.id == ticketManager.targetProgramId) {
-                            specificRequester.safeRequestFocusWithRetry("Ticket_TARGET_ID")
+                            // プレイヤーから戻った際の復帰。LazyColumn のスクロールと項目の描画を
+                            // 待つ必要があるが、固定間隔(100ms×5回)ではなくフレーム単位で試す。
+                            specificRequester.requestFocusWhenReady("Ticket_TARGET_ID")
                             ticketManager.consume(FocusTicket.TARGET_ID)
                         }
                     }
@@ -188,7 +203,7 @@ fun RecordListContent(
                         program = program, konomiIp = konomiIp, konomiPort = konomiPort,
                         backendType = backendType,
                         onClick = { onProgramClick(program, null) },
-                        isPersistentFocused = (isSideMenuOpen || isDetailVisible) &&
+                        isPersistentFocused = (isSideMenuOpen || isDetailVisible || isRestoringListFocus) &&
                                 (if (isDetailVisible) detailProgram?.id == program.id else focusedProgram?.id == program.id),
                         modifier = Modifier
                             .focusRequester(specificRequester)
@@ -207,7 +222,7 @@ fun RecordListContent(
                             .onKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown) {
                                     if (event.key == Key.DirectionRight) {
-                                        if (!isScrollInProgress) isSideMenuOpen = true
+                                        if (!isScrollInProgress) onSideMenuStateChange(true)
                                         return@onKeyEvent true
                                     } else if (event.key == Key.DirectionLeft) {
                                         if (!isScrollInProgress) onOpenNavPane()
@@ -275,11 +290,29 @@ fun RecordListContent(
                                     menuAnchorRequester.safeRequestFocus()
                                     onDetailStateChange(false)
                                     onClearDetail()
-                                    scope.launch { delay(50); detailButtonFocusRequester.safeRequestFocus() }
+                                    scope.launch { detailButtonFocusRequester.requestFocusWhenReady("DetailPanelClosed") }
                                 } else {
-                                    isSideMenuOpen = false
+                                    onSideMenuStateChange(false)
                                     val id = focusedProgram?.id
-                                    if (id != null) {
+                                    val itemRequester = id?.let { itemFocusRequesters[it] }
+                                    if (itemRequester != null) {
+                                        // サブメニューを開いている間リストはスクロールしないため、
+                                        // 元の項目は画面内に残っている。TARGET_ID チケットで戻すと
+                                        // LaunchedEffect が scrollToItem(index - 1) を実行して
+                                        // リストが不要に動く(バウンドの原因)ので、ここでは配置済みの
+                                        // FocusRequester へ直接フォーカスを戻す。
+                                        isRestoringListFocus = true
+                                        scope.launch {
+                                            val restored =
+                                                itemRequester.requestFocusWhenReady("SideMenuClosed")
+                                            // 項目が破棄されていた場合だけ、従来のスクロール付き
+                                            // 復帰へ退避する
+                                            if (!restored) {
+                                                ticketManager.issue(FocusTicket.TARGET_ID, id)
+                                            }
+                                            isRestoringListFocus = false
+                                        }
+                                    } else if (id != null) {
                                         ticketManager.issue(FocusTicket.TARGET_ID, id)
                                     } else {
                                         ticketManager.issue(FocusTicket.LIST_TOP)
@@ -320,7 +353,7 @@ fun RecordListContent(
                                     menuAnchorRequester.safeRequestFocus(); onDetailStateChange(
                                     false
                                 ); onClearDetail()
-                                    scope.launch { delay(50); detailButtonFocusRequester.safeRequestFocus() }
+                                    scope.launch { detailButtonFocusRequester.requestFocusWhenReady("DetailPanelClosed") }
                                 },
                                 modifier = Modifier.fillMaxSize(),
                                 timeFormat = timeFormat
@@ -369,11 +402,15 @@ fun RecordListContent(
                                         .focusRequester(detailButtonFocusRequester)
                                         .focusProperties { right = FocusRequester.Cancel },
                                     onClick = {
-                                        detailProgram = focusedProgram; focusedProgram?.id?.let {
-                                        onFetchDetail(it)
-                                    }; detailPanelFocusRequester.safeRequestFocus(); onDetailStateChange(
-                                        true
-                                    )
+                                        detailProgram = focusedProgram
+                                        focusedProgram?.id?.let { onFetchDetail(it) }
+                                        // ここでフォーカスを要求してはいけない。パネルを表示するのは
+                                        // この下の onDetailStateChange(true) であり、この時点では対象が
+                                        // まだ配置されていないため requestFocus は必ず false を返す
+                                        // (logcat に "Focus target is not ready" が出ていた原因)。
+                                        // 実際のフォーカスは LaunchedEffect(isDetailVisible) が
+                                        // requestFocusWhenReady で当てている。
+                                        onDetailStateChange(true)
                                     })
                                 Spacer(Modifier.height(12.dp))
                                 SideMenuItem(
@@ -385,10 +422,8 @@ fun RecordListContent(
                                     },
                                     onClick = {
                                         focusedProgram?.let {
-                                            val keyword =
-                                                TitleNormalizer.toSqlSearchQuery(displayTitle)
-                                            onSeriesSearch(keyword)
-                                            isSideMenuOpen = false
+                                            onSeriesSearch(it)
+                                            onSideMenuStateChange(false)
                                         }
                                     })
                                 Spacer(Modifier.height(12.dp))
@@ -404,7 +439,7 @@ fun RecordListContent(
                                     onClick = {
                                         focusedProgram?.let {
                                             if (!isAlreadyAutoReserved && displayTitle.isNotBlank()) {
-                                                isSideMenuOpen = false
+                                                onSideMenuStateChange(false)
                                                 onAutoReserveClick(it)
                                             }
                                         }

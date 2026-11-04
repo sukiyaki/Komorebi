@@ -11,9 +11,9 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.*
+import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.model.AudioMode
-import com.beeregg2001.komorebi.data.model.StreamEncoding
 
 enum class LCropMode { HIDDEN, MENU, DIRECT_ADJUST }
 enum class ZoomOrigin { TopLeft, TopRight, BottomLeft, BottomRight }
@@ -31,8 +31,8 @@ class VideoPlayerState {
     // 再生設定
     var currentAudioMode by mutableStateOf(AudioMode.MAIN)
     var currentSpeed by mutableFloatStateOf(1.0f)
-    var currentEncoding by mutableStateOf(StreamEncoding("読み込み中...", ""))
     var currentQuality by mutableStateOf(StreamQuality("", ""))
+    var currentEncoding by mutableStateOf(StreamEncoding.fromValue("h264"))
     var isSubtitleEnabled by mutableStateOf(false)
     var isCommentEnabled by mutableStateOf(false)
 
@@ -57,6 +57,9 @@ class VideoPlayerState {
     var wasPlayingBeforeSceneSearch = false
     var downKeyDownTime = 0L
     var isDownKeyLongPressed = false
+    var isMediaSeekLongPressHandled = false
+    // チャプタースキップの長押し連続発火用に、最後に発火した時刻を保持する
+    var lastMediaSeekRepeatTime = 0L
 
     // ★ 新規追加: クイックシーク状態の追跡
     var isQuickSeeking by mutableStateOf(false)
@@ -89,7 +92,9 @@ class VideoPlayerState {
         onSubMenuToggle: (Boolean) -> Unit,
         exoPlayerIsPlaying: Boolean,
         onPause: () -> Unit,
-        onPlay: () -> Unit
+        onPlay: () -> Unit,
+        onSkipPreviousChapter: () -> Unit = {},
+        onSkipNextChapter: () -> Unit = {}
     ): Boolean {
         if (isPiPMode) return false
         val keyCode = keyEvent.nativeKeyEvent.keyCode
@@ -128,8 +133,25 @@ class VideoPlayerState {
                         lCropZoom = (lCropZoom - 5f).coerceAtLeast(100f); return true
                     }
 
-                    NativeKeyEvent.KEYCODE_DPAD_CENTER, NativeKeyEvent.KEYCODE_ENTER, NativeKeyEvent.KEYCODE_BACK, NativeKeyEvent.KEYCODE_ESCAPE -> {
-                        lCropMode = LCropMode.MENU; onSubMenuToggle(true); return true
+                    NativeKeyEvent.KEYCODE_DPAD_CENTER, NativeKeyEvent.KEYCODE_ENTER -> {
+                        // ★ 修正: 以前のリファクタリング(56a872d)で誤って戻るキーの分岐と統合され、
+                        // 決定キーを押すとダイレクト調整を抜けてクラシックUIのサブメニューが開いて
+                        // しまう回帰バグが混入していた。オーバーレイの案内文言(「決定ボタン: 倍率切り替え」)
+                        // 通り、決定キーは調整モードを維持したまま倍率をプリセット値でサイクルさせる。
+                        lCropZoom = when {
+                            lCropZoom < 125f -> 125f
+                            lCropZoom < 150f -> 150f
+                            lCropZoom < 175f -> 175f
+                            lCropZoom < 200f -> 200f
+                            else -> 100f
+                        }
+                        return true
+                    }
+
+                    NativeKeyEvent.KEYCODE_BACK, NativeKeyEvent.KEYCODE_ESCAPE -> {
+                        // ★ 修正: メニューへ戻るだけでよく、クラシックUIのサブメニュー(isSubMenuOpen)を
+                        // 開く必要はない(VideoLCropOverlay自身がlCropModeを見て描画を切り替える)。
+                        lCropMode = LCropMode.MENU; return true
                     }
                 }
             }
@@ -137,6 +159,97 @@ class VideoPlayerState {
         }
 
         if (isSubOverlayOpen) return false
+
+        val isMediaRewind = keyCode == NativeKeyEvent.KEYCODE_MEDIA_REWIND
+        val isMediaFastForward = keyCode == NativeKeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+        val isPreviousChapterKey = keyCode == NativeKeyEvent.KEYCODE_MEDIA_PREVIOUS ||
+                keyCode == NativeKeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD ||
+                keyCode == NativeKeyEvent.KEYCODE_MEDIA_STEP_BACKWARD
+        val isNextChapterKey = keyCode == NativeKeyEvent.KEYCODE_MEDIA_NEXT ||
+                keyCode == NativeKeyEvent.KEYCODE_MEDIA_SKIP_FORWARD ||
+                keyCode == NativeKeyEvent.KEYCODE_MEDIA_STEP_FORWARD
+
+        if (isPreviousChapterKey || isNextChapterKey) {
+            if (isActionDown && !isMediaSeekLongPressHandled) {
+                onShowControlsChange(true)
+                if (isPreviousChapterKey) onSkipPreviousChapter() else onSkipNextChapter()
+                isMediaSeekLongPressHandled = true
+            } else if (isActionUp) {
+                isMediaSeekLongPressHandled = false
+            }
+            return true
+        }
+
+        if (isMediaRewind || isMediaFastForward) {
+            if (isActionDown) {
+                onShowControlsChange(true)
+                if (keyEvent.nativeKeyEvent.repeatCount > 0 && chapters.size > 1) {
+                    // 長押し中は400ms間隔でチャプタースキップを連続発火させる
+                    val now = System.currentTimeMillis()
+                    if (!isMediaSeekLongPressHandled || now - lastMediaSeekRepeatTime > 400) {
+                        if (isMediaRewind) onSkipPreviousChapter() else onSkipNextChapter()
+                        isMediaSeekLongPressHandled = true
+                        lastMediaSeekRepeatTime = now
+                    }
+                } else if (!isMediaSeekLongPressHandled) {
+                    val basePos = pendingSeekPositionMs ?: getCurrentPositionMs()
+                    val amount = if (isMediaRewind) -10_000L else 30_000L
+                    val newPos = (basePos + amount).coerceIn(
+                        0L,
+                        if (totalDurationMs > 0) totalDurationMs else Long.MAX_VALUE
+                    )
+                    performSeek(newPos)
+                    triggerSeekingPreview()
+                }
+            } else if (isActionUp) {
+                isMediaSeekLongPressHandled = false
+                lastMediaSeekRepeatTime = 0L
+            }
+            return true
+        }
+
+        // PLAY_PAUSE はトグル、PLAY / PAUSE は方向が決まっているキーなので個別に扱う。
+        // (Bluetooth キーボード等は PLAY と PAUSE を別々に送ってくるため、
+        //  トグル扱いにすると「再生中に Play を押すと一時停止する」逆転が起きる)
+        if (keyCode == NativeKeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+            if (isActionUp) {
+                onShowControlsChange(true)
+                togglePlayPause(exoPlayerIsPlaying)
+                if (exoPlayerIsPlaying) onPause() else onPlay()
+            }
+            return true
+        }
+
+        if (keyCode == NativeKeyEvent.KEYCODE_MEDIA_PLAY) {
+            if (isActionUp) {
+                onShowControlsChange(true)
+                if (!exoPlayerIsPlaying) {
+                    togglePlayPause(false)
+                    onPlay()
+                }
+            }
+            return true
+        }
+
+        if (keyCode == NativeKeyEvent.KEYCODE_MEDIA_PAUSE) {
+            if (isActionUp) {
+                onShowControlsChange(true)
+                if (exoPlayerIsPlaying) {
+                    togglePlayPause(true)
+                    onPause()
+                }
+            }
+            return true
+        }
+
+        if (keyCode == NativeKeyEvent.KEYCODE_MEDIA_STOP) {
+            if (isActionDown) {
+                onShowControlsChange(true)
+                isPlayerPlaying = false
+                onPause()
+            }
+            return true
+        }
 
         if (keyCode == NativeKeyEvent.KEYCODE_BACK || keyCode == NativeKeyEvent.KEYCODE_ESCAPE) {
             if (isActionDown) {

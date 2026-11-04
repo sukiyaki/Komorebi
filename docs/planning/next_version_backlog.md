@@ -1,0 +1,957 @@
+# 次バージョンに向けたタスク洗い出し（2026-09-08時点 / 2026-09-26追記 / 2026-09-27方針決定）
+
+`features/1.1.0` の次バージョンで実現したい項目を洗い出し、それぞれの実現可能性を調査した結果をまとめる。各項目の詳細調査はこのドキュメント作成時点でのコードベース・外部情報に基づく。着手前に該当箇所の現状を再確認すること。
+
+実現度は 高 / 中 / 低 の3段階。「高」は設計変更なしで局所的に実装できるもの、「中」は複数レイヤーに手を入れる必要があるが技術的障壁はないもの、「低」は技術的難易度そのものが非常に高いもの。
+
+> **2026-09-26 追記**: 項目8〜12（BDオーサリング / denpa対応 / 低スペック機の高速化 / デコーダ判別機構 / フォーカス管理の整理）を追加し、既存の項目1・5に再確認結果を反映した。項目8〜12の調査は `develop`（`7df6618`）時点のコードベースと、denpa・Honorebiの公開リポジトリに基づく。
+>
+> **2026-09-27 方針決定**: 本バージョン（1.2.0-beta）で着手する項目・見送る項目を決定した。R8/リソース圧縮は見送り、項目8（BDオーサリング）と項目9（denpa対応）は保留。詳細は末尾の「[着手方針（2026-09-27 決定）](#着手方針2026-09-27-決定)」を参照。各項目内の「【2026-09-27 方針決定: …】」見出しにも個別の判断を記載している。
+>
+> **リリース前に必ず確認**: 利用者の操作・選択が必要な変更は末尾の「[リリース時に案内が必要な事項](#リリース時に案内が必要な事項)」にまとめている。リリースノートへ転記する文面もそこに用意してある。
+
+---
+
+## 1. 4K等の高解像度画面への動的レイアウト対応
+
+**実現度: 高**（設計次第で段階導入可能）
+
+### 現状
+- 画面サイズ・密度への動的対応はほぼ皆無。`LocalConfiguration`/`screenWidthDp` を参照しているのは番組表(EPG)関連の2ファイルのみで、それも Canvas 描画領域の計算用途にとどまる。
+- EPGのフォントサイズ・列数（`epgFontSizeScale`, `epgColumnCount`）は密度に応じた自動調整ではなく、設定画面でユーザーが手動指定するDataStore値。
+- ホーム画面・ライブタブなどは `.dp`/`.sp` が全て直値でハードコード。
+- グリッド列数も3箇所（`RecordGridContent.kt:107`, `RecordSeriesGridContent.kt:97`, `SmbListContent.kt:312`）で `GridCells.Fixed(4)` と固定。`GridCells.Adaptive` は未使用。
+- `res/values-sw*dp` 等の画面サイズqualifier、`dimens.xml` は存在せず、Manifest/Gradleにも密度・解像度対応の設定なし。
+
+### 原因の推定
+Android TVは本来dp単位で組めば密度換算により1080p/4Kで見た目サイズが揃うはずだが、(a) TV機種メーカーの密度設定が推奨通りでないことがある、(b) このアプリが画面のdp幅に応じて表示項目数を増やすロジックを一切持たないため、4Kの広い物理領域を使っても情報密度が変わらない、の両方が「4Kなのに窮屈」の原因と考えられる。
+
+### 対応方針
+- **A. 項目数の動的変更**: `GridCells.Fixed(4)` → `GridCells.Adaptive(minSize=...)` への置き換え（3箇所、低リスク）。加えて `screenWidthDp` に基づくブレークポイントで列数・カードサイズ・フォントスケールを切り替える共通CompositionLocal（`LocalTvSizeClass`案）を新設し、ホーム画面等に適用。
+- **B. 密度の正規化**: `CompositionLocalProvider(LocalDensity provides Density(...))` をルートに挟み、OS側の密度設定のバラつきを吸収して常に一定のdp論理空間を保証する。
+
+### 次のステップ
+1. `GridCells.Fixed(4)` → `Adaptive` の置き換えで効果を実機確認（1080p機・4K機の両方で比較）
+2. 共通スケールレイヤーの導入をホーム画面に適用して検証
+3. 密度正規化（B）は影響範囲が全画面に及ぶため、A確立後に実機検証込みで検討
+
+### 【2026-09-26 再確認】
+
+- コードの現状は2026-09-08時点から変化なし。`GridCells.Fixed(4)` は3箇所（`RecordGridContent.kt:107`, `RecordSeriesGridContent.kt:97`, `SmbListContent.kt:312`）のまま、`GridCells.Adaptive` は未使用、`res/values-sw*dp` / `dimens.xml` も未作成。
+- 「画面解像度に合わせて文字サイズ・表示量を最適化したい」という要望に対する移行手順の補足: EPGのフォントスケール（`epgFontSizeScale`）・列数（`epgColumnCount`）は既にユーザーが設定画面で手動指定するDataStore値なので、これを一気に自動算出へ置き換えると**既存ユーザーが自分で調整した値が無視されて体感が悪化する**。「自動（既定）/ 手動」の選択肢に拡張し、既に手動値を持っているユーザーは手動扱いで維持するのが安全。
+- ブレークポイントの持ち方は、`res/values-sw*dp` のリソースqualifierよりも `LocalConfiguration.screenWidthDp` を見る CompositionLocal（`LocalTvSizeClass` 案）のほうが Compose for TV では素直。特にEPGはCanvas描画（`ModernEpgCanvasEngine`）なのでリソースqualifierの恩恵を受けられず、どちらにせよコード側でスケール値を持つ必要がある。
+- 項目5・項目12と触る画面が重なるため、着手順を揃えると実機回帰検証が1回で済む。
+
+#### 【2026-09-27 方針決定: 小さく入れて様子を見る】
+
+一度に全画面へ適用せず、`GridCells.Fixed(4)` → `GridCells.Adaptive` の置き換えのように**影響範囲が閉じた変更から入れ、実機で様子を見ながら段階的に広げる**。共通スケールレイヤー（`LocalTvSizeClass` 案）の導入は、この段階適用で得た知見（どの画面でどの基準値が妥当か）を踏まえてから設計する。密度正規化（方針B）は引き続き後回し。
+
+#### 【2026-09-27 実測】方針A（Adaptive 化）は効果がないと判明
+
+実機の画面情報を実測した結果、**方針A（`GridCells.Adaptive` 化・`screenWidthDp` ベースのブレークポイント）はこの環境では効果を持たない**と分かった。
+
+```
+Fire TV Stick 4K Max 第1世代 (AFTKA) / フルHDモニター接続
+Physical size:    1920x1080
+Physical density: 320   → dp幅 = 1920 ÷ 2 = 960dp
+```
+
+Android TV は 1080p / 4K のどちらでも OS が同じ dp 幅（多くの機種で 960dp）として扱う。利用可能幅を約900dpとして `Adaptive` の列数を計算すると:
+
+| minSize | 計算 | 結果 |
+|---|---|---|
+| 205dp | (900+20) ÷ (205+20) = 4.08 | **4列**（現状と同じ） |
+| 185dp | 920 ÷ 205 = 4.49 | **4列**（同じ） |
+| 150dp | 920 ÷ 170 = 5.4 | 5列だが `RecordedCard` が `.width(185.dp)` 固定なのではみ出る |
+
+つまり「4Kなのに窮屈」の原因は**列数を増やすロジックの不足ではなく、dp 空間が固定されていること**だった。dp 幅を見るロジックをいくら足しても情報量は増えない。2026-09-08 時点の分析では「(b) 画面の dp 幅に応じて表示項目数を増やすロジックを持たない」を原因の一つに挙げていたが、より正確には**dp 幅自体が変わらないので、dp 幅を見るロジックを入れても効果がない**。
+
+なお 4K モニター接続時の値は未検証（フルHDモニターでの計測）。4K 端末で検証可能になった時点で `Adaptive` 化の再検討は可能。
+
+#### 【2026-09-27 実装】「UI の大きさ」設定（PR #119）
+
+方針B（密度の正規化）に相当する `LocalDensity` の上書きを実装した。設定 → 表示設定 に「UI の大きさ」を追加し、**大きめ(110%) / 標準(100%) / 小さめ(90%) / 特小(80%) / 最小(75%)** から選べる。
+
+density を下げると論理 dp 空間が広がり、同じ dp 指定の UI が相対的に小さくなるため、文字サイズと余白を含めた全体が縮んで画面に入る情報量が増える。既定値は等倍なので、設定を変えていない利用者の見た目は変わらない。
+
+当初「密度正規化は影響範囲が全画面に及ぶため A 確立後に検討」としていたが、A に効果がないと判明したため順序を入れ替えた。ただし**自動判定ではなくユーザーが選ぶ形**にしている。density 320 は標準値であり、機種側の設定が不適切かどうかを検知する材料がないため、自動補正の判断基準を作れない。既存の `epgFontSizeScale` / `epgColumnCount`（ユーザー手動設定）と同じ思想。
+
+実装上の判断:
+- DataStore の読み込みが非同期のため、起動直後の一瞬だけ等倍で描画されてから設定値が反映される。同期読み込みは起動のクリティカルパスをふさぐため避けた（`ColdStartDiag` を入れて起動改善に取り組んでいる文脈と矛盾する）。
+- `ModernEpgCanvasEngine` は `LocalDensity` を直接参照しているため、番組表の Canvas 描画も連動してスケールする。
+
+#### 【2026-09-29 追加修正】ダイアログに反映されない問題（PR #122）
+
+実機検証で、**終了ダイアログなどが常に等倍で表示される**ことが判明した。Compose の `Dialog` / `Popup`（`AlertDialog` も内部で `Dialog` を使う）は独自の ComposeView を作り、**その中で `LocalDensity` が端末本来の density で提供し直される**ため、`MainActivity` での上書きが引き継がれない。
+
+対応として `ui/theme/UiScale.kt` を新設し、倍率を運ぶ `LocalUiScale` と、ダイアログ内側で density へ再適用する `ProvideUiScale` を用意した。`Dialog` 形式（`InputDialog` / `AiTextInputDialog`）は直下を包めば内部すべてに効くが、`AlertDialog` 形式（`ExitDialog`）はスロット単位でしか包めないため、**外枠のパディングは素の density のまま**という制約が残る。`Box` で重ねているだけのダイアログ（`SyncErrorDialog` / `RobustUpdateDialog`）は同じコンポジションに属するため対象外。
+
+項目4（UI刷新）でダイアログを作り替える際は、`AlertDialog` をやめて `Dialog` + 自前レイアウトにすればこの制約は解消できる。
+
+#### オーバースキャン考慮の余白は項目4へ
+
+現在の UI は**オーバースキャンで利用されることを考慮してかなりゆとりを持たせた設計**になっている。density の上書きはこの余白も同時に詰めるため、オーバースキャンしないテレビでは表示領域を有効に使えるようになる。
+
+一方で「**余白だけ詰めて文字サイズは保つ**」という調整はできない。各画面の `padding` が直値でハードコードされている（例: `OpenSourceLicensesScreen` は `.padding(48.dp)`、`DeviceCapabilitiesScreen` は `.padding(horizontal = 56.dp, vertical = 38.dp)`）ため、共通の値を参照する形へのリファクタが必要で、これは項目4（UI刷新）の範囲。**オーバースキャン前提の余白をどこまで残すかを設定で選べるようにするかも、項目4で決める。**
+
+---
+
+## 2. AIコンシェルジュのキーワード自動予約が動作しない問題
+
+**実現度: 高（原因特定済み・低リスクな修正で対応可能）**
+
+### 原因
+`MainRootScreen.kt:265` の `AiConciergeAction.ReserveAuto` ハンドラが `reserveViewModel.addEpgReserve()` を呼ぶ際、`networkId=0, transportStreamId=0, serviceId=0` を**常に固定値として**渡している。
+
+`ReserveViewModel.addEpgReserve()`（`ReserveViewModel.kt:275`）はこれを無条件に `ProgramSearchCondition.serviceRanges = listOf(serviceRange)` として**必ず非nullの1要素リスト**にしてしまう。
+
+`EdcbDataMapper.encodeSearchKeyInfo()`（`EdcbDataMapper.kt:217`）では
+```kotlin
+val serviceList = cond.serviceRanges?.map { ... } ?: cachedServices.map { ... }
+```
+と「`serviceRanges` が null なら全チャンネルにフォールバック」という設計になっているが、上記の理由で `serviceRanges` は常に非null（`(0,0,0)` という実在しないサービスIDの単一要素）になるため、**全チャンネルへのフォールバックが発動せず、EDCB側はサービスID=0だけを対象に検索する条件として登録してしまう**。実在するどの放送サービスもID=0ではないため、自動録画条件が永遠にヒットしない。
+
+「キーワード単体では動作せず対象サービス・チャンネルを指定する必要があるのでは」という予想は方向としては正しいが、正確には「チャンネル指定が必要」なのではなく「**指定なし（全チャンネル対象）を意味するはずの0がプレースホルダーではなく実際のフィルタ値として扱われてしまっている**」というバグ。
+
+### 修正方針
+`ReserveViewModel.addEpgReserve()` または呼び出し元で、`networkId/transportStreamId/serviceId` が全て0（＝チャンネル未指定）の場合は `serviceRanges = null` を渡すように分岐する。低リスク・影響範囲が狭い一点集中の修正。
+
+### 次のステップ
+1. `addEpgReserve` のシグネチャ、または `AiConciergeAction.ReserveAuto` ハンドラ側で null 分岐を追加
+2. EDCB実機で自動予約条件を登録し、番組表検索が全チャンネルに対して走ることを確認
+3. KonomiTV/EPGStationバックエンドでも同じ呼び出し経路を使っているか確認（他バックエンドの `addReservationCondition` 実装も同様の問題を抱えていないか要チェック）
+
+### 【2026-09-29 完了】実際には3つの不具合が重なっていた（PR #120）
+
+着手してみると、当初の見立て（`serviceRanges` が常に非 null になる）だけでは解決せず、**独立した3つの不具合が重なっていた**ことが分かった。実機ログと、EDCB 本体・KonomiTV のソース照合によって確定させている。
+
+| # | 不具合 | 影響範囲 |
+|---|---|---|
+| 1 | `serviceRanges` が常に `(0,0,0)` の非 null リストになり、全チャンネルへのフォールバックが発動しない | EDCB（条件は登録されるがヒットしない） |
+| 2 | `broadcastType` に `"GR,BS,BS4K,CS,SKY"`、`duplicateScope` に `"SameTitle"` という**スキーマ上不正な値**を渡していた | KonomiTV（HTTP 422 で登録自体が失敗） |
+| 3 | **EDCB の書き込み系コマンド6つが、成功しているのに失敗と報告していた** | EDCB（予約・自動予約の追加/変更/削除すべて） |
+
+#### 2 について
+
+KonomiTV の `ProgramSearchCondition` は `broadcast_type: Literal['All','FreeOnly','PaidOnly']`、`duplicate_title_check_scope: Literal['None','SameChannelOnly','AllChannels']` で、範囲外の値は 422 で拒否される。**`broadcast_type` は放送波の種別を並べるフィールドではなく「すべて / 無料のみ / 有料のみ」の3択**だった。
+
+EDCB 側は `== "FreeOnly"` のような単純比較のため未知の値でも既定動作に落ち、**エラーにならず気づきにくい**。手動作成の経路（`EpgReserveDialog`）は初期値 `"All"` を使っており正しく、AI コンシェルジュ経路だけが不正だった。
+
+#### 3 について
+
+当初の症状「自動予約が動作しない」とは別に、**EDCB バックエンドの書き込み操作すべてが「成功しても失敗と表示される」状態**だった。詳細と再発防止のための一次資料は [`docs/architecture/edcb_protocol.md`](../architecture/edcb_protocol.md) にまとめた。
+
+#### 進め方の反省
+
+1 と 2 は推測で修正して2度外し、そのたびに実機検証を依頼する結果になった。3 に至っては実機ログ（`status: 0`）が出るまで存在に気づけなかった。**EDCB のような仕様書のない独自プロトコルでは、最初に参照実装（KonomiTV の `CtrlCmdUtil.py`）を照合すべきだった。** 推測が外れた時点で診断情報を出す方向へ切り替えたのが、結果的に最短経路だった。
+
+---
+
+## 3. KonomiTVユーザー連携機能（視聴履歴・チャンネルピン留め・マイリスト）
+
+**実現度: 中**
+
+### 現状の重大な発見
+`KonomiApi.kt` には `GET api/mylists` / `GET・POST api/histories` / `GET api/users/me`(pinned_channel_ids) が定義され、`KonomiRepository.kt` にも呼び出し実装があるが、**これらのエンドポイントはKonomiTV実サーバー（`tsukumijima/KonomiTV`）には存在しない**。例外を握りつぶす実装のため今まで気づかれず残っていたデッドコード／実質バグ。
+
+実際のKonomiTV APIでは、マイリスト・視聴履歴・ピン留めチャンネルは独立エンドポイントではなく、`GET/PUT /api/settings/client`（JWT認証必須）で読み書きする**単一のクライアント設定JSONブロブ**（`IClientSettings`、約50項目、字幕・コメントミュート設定なども同居）の一部として実装されている。
+
+また、**ログイン機能（JWT取得）自体が皆無**。`POST /api/users/token`（OAuth2 password grant）を叩く導線、トークン保存、`Authorization: Bearer` ヘッダー付与、失効時の再ログインが全て未実装。
+
+### 実装規模
+- 認証基盤（ログインUI＋JWT保存＋Interceptor）: 中
+- `GET/PUT /api/settings/client` の fetch→マージ→PUT ラッパー実装（既存の誤った `api/mylists`/`api/histories` 呼び出しの置き換え、他クライアントとの設定競合・データ消失に注意）: 中〜大
+- マイリスト/視聴履歴/ピン留めUI: 中〜大
+- アーキテクチャ的には `DtvProviderProxy` の4インターフェースは汚さず、`KonomiRepository` 固有メソッド＋`backendType == "KONOMITV"` ガードで実装するのが既存パターン（`HomeViewModel` の視聴履歴同期）と一貫する。EDCB/EPGStationにはアカウント概念が無いため、該当UIはバックエンドに応じて非表示にする。
+
+### 次のステップ
+1. `POST /api/users/token` によるログイン画面＋JWT基盤の構築
+2. `IClientSettings` 相当のモデル定義と安全な fetch-merge-put ラッパー実装
+3. マイリスト・視聴履歴（書き戻し）・ピン留めチャンネルUIを順次追加
+
+---
+
+## 4. 視聴中UI・ホーム画面・各種タブのUI刷新
+
+**実現度: 高（技術的障壁なし、純粋に工数の大きいデザイン/実装作業）**
+
+### 規模感
+`ui/home` + `ui/live` + `ui/main` の3ディレクトリだけで計約12,600行・26ファイル。代表的な大型ファイル: `HomeLauncherScreen.kt`(1117行), `LivePlayerScreen.kt`(1047行), `MainRootScreen.kt`(789行)。
+
+技術的な制約は特にないため、まずデザイン方針・優先度（どの画面から着手するか）を固めてから段階的リファクタが必要。既存のフォーカス管理・キー処理（項目5と関連）を壊さないよう、画面単位で切り出しながら進めるのが安全。
+
+### 次のステップ
+1. 刷新対象画面の優先順位付け（ホーム / ライブ視聴中UI / 各タブ、のどこから着手するか）
+2. デザイン方向性の合意（現行の見た目を踏襲した整理か、大幅刷新か）
+3. 項目1（解像度対応）と合わせて設計するとレイアウトの手戻りが少ない
+
+---
+
+## 5. リモコンキーを使った選局・各種ショートカットキー
+
+**実現度: 高**
+
+### 現状
+キー処理はActivity層になく、各Composable画面が個別に`onKeyEvent`を持つ設計。ただしライブ視聴（`LivePlayerState.handleKeyEvent()`）と動画再生（`VideoPlayerState.handleKeyEvent()`）の2大画面は状態クラスに一元化済みで、拡張の差し込み口として扱いやすい。
+
+**既に実装済み**: 左右キーでのチャンネル前後切替、決定キー長押しでのPinP移行、戻るキー長押しでのPinP、メディアキーによる再生制御・チャプタースキップ・クイックシークなど。
+
+**未実装（TVリモコン標準キーコードが一切コード中に登場しない）**:
+- 数字キー（`KEYCODE_0`〜`9`）による直接選局
+- `KEYCODE_CHANNEL_UP`/`KEYCODE_CHANNEL_DOWN`
+- `KEYCODE_GUIDE`（番組表）、`KEYCODE_INFO`（番組情報）、`KEYCODE_CAPTIONS`（字幕トグル）
+- `KEYCODE_PROG_RED/GREEN/YELLOW/BLUE`（データ放送カラーボタン、項目6に依存）
+- 専用ショートカットとしての再生速度変更（現状はサブメニュー経由のみ）
+
+### 優先実装案（コスト小さい順）
+1. **`KEYCODE_CHANNEL_UP`/`DOWN` の割当**（小）— 既存の左右キーチャンネル切替ロジックに1行分岐を足すだけ
+2. **数字キーによる3桁チャンネル直接選局**（小〜中）— `LivePlayerState` に入力バッファ＋タイムアウトデバウンスを追加、桁数表示オーバーレイが必要
+3. **`KEYCODE_GUIDE` での番組表直接ジャンプ**（中）— 既存の「決定長押し→サブメニュー→番組表」導線を1キーに短縮
+
+### 次のステップ
+1. 上記優先案から着手（`LivePlayerState.kt`, `LivePlayerOverlays.kt` が主な変更対象）
+2. `VideoPlayerState.kt` 側にも同様のショートカット体系を展開するか検討
+
+### 【2026-09-26 再確認】キーコードの機種差は「網羅」ではなく「学習」で解く
+
+全KEYCODE参照を再確認した結果、2026-09-08時点の調査から変化なし。使用されているのは DPAD系 / `BACK` / `ESCAPE` / `ENTER` / `PAGE_UP`・`PAGE_DOWN` / `MEDIA_*` のみで、`KEYCODE_CHANNEL_UP`・`CHANNEL_DOWN`、数字キー、`KEYCODE_GUIDE` / `INFO` / `CAPTIONS` / `PROG_RED`系は依然として1箇所も登場しない。
+
+「機種によってKEYCODEの実装が違うので対応は大変そう」という懸念について、**対応機種を実装側で網羅する方針は原理的に破綻する**（未知の独自キーコードに追従できず、機種が増えるたびに実装を足し続けることになる）。そこで方針を変える。
+
+#### 代案: キー割り当て学習UI + 論理アクション層
+
+1. **論理アクション層の新設** — 「選局UP」「選局DOWN」「番組表を開く」「番組情報」「字幕トグル」「再生速度変更」等の**論理アクション**を定義し、`KeyBindingRepository`（新設）が 論理アクション ↔ `keyCode` の対応をDataStoreで保持する。`LivePlayerState.handleKeyEvent()` / `VideoPlayerState.handleKeyEvent()` は生の`keyCode`ではなく論理アクションで分岐する形に書き換える。
+2. **学習UI** — 設定画面に「このアクションに割り当てたいキーを押してください」を置き、受け取った生の`keyCode`をそのまま保存する。これにより**Komorebiが知らない独自キーコードでもユーザー自身が割り当てられる**ようになり、機種対応が実装の問題ではなくなる。
+3. **未割当キーの可視化** — 割り当てのないキーが押されたときの`keyCode`を記録し、設定画面に「最後に押された未割当キー: keyCode=◯◯」として表示する。ユーザーが自分のリモコンのキーコードを自力で調べられるようになり、問い合わせ対応のコストも下がる。
+4. **専用キー前提のUI整理** — 「専用キーが使える機種では画面を整理したい」という要望は、この論理アクション層に対して「そのアクションが割り当て済みか」を問い合わせれば実現できる。割り当て済みならサブメニューから該当項目を省く／オンスクリーンにキーヒントを出す、といった出し分けが可能。
+
+#### 影響範囲の注意
+
+`onKeyEvent` は2大プレイヤー（`LivePlayerState` / `VideoPlayerState`）以外にも散在している（`HomeContents.kt`, `VideoTabContent.kt`, `EpgNavigationContainer.kt`, `ModernEpgCanvasEngine.kt`, `SceneSearchOverlay.kt`, `VideoPlayerSubMenu.kt`, `VideoPlayerOverlays.kt`）。論理アクション層を導入するならこれらの整理も同時に行うことになるため、**項目12（フォーカス管理の時間依存の整理）と合わせて1本の設計案件として扱うのが効率的**。
+
+---
+
+## 6. リモコンキー対応込みのデータ放送（BML）表示
+
+**実現度: 低（フル実装は非推奨）**
+
+### 現状
+データ放送関連の処理は皆無。`servicefilter.cpp` のPMT再構成ロジックが、データカルーセル（stream_type 0x0D の DSM-CC セクション）のPIDをそもそも黙って破棄しており、プレイヤー層まで到達しない設計。
+
+既存の字幕実装（libaribcaption、PR#100関連）とは技術的に別次元。字幕は「文字コード列を定型レイアウトで描画するだけ」の閉じた仕組みだが、BMLは「XMLベースの文書＋モノメディア＋独自CSS＋ECMAScript風スクリプトがDSM-CCカルーセルに多重化された、事実上のテレビ向け簡易ブラウザ」であり、字幕デコーダの流用はできない。
+
+### 技術的難易度
+1. DSM-CCデータカルーセル抽出（PIDパススルー追加＋DII/DDB再構築＋疑似ファイルシステム）: 中〜高
+2. BMLパース・レイアウト・スクリプト実行系: **事実上「テレビ向けの小さなWebブラウザを1個作る」に等しい規模**。オープンソース実装は2022年公開の [web-bml](https://github.com/otya128/web-bml)（MIT）が唯一の先行例で、それ以前はOSSでの実装例が存在しなかったことからも参入障壁の高さが伺える。
+3. リモコンキー⇄BMLイベントモデルの連携: 相対的に軽い
+4. 双方向通信（電話回線前提）: 現在ほぼ使われておらず無視して良い
+
+### 現実的な落としどころ
+- **フル実装は見送り**を推奨。
+- 選択肢A: web-bmlのクライアント側（MIT）をAndroid WebViewへ移植し、Komorebi側はTS→データカルーセル抽出の「窓口」役に徹する（それでも数か月規模）
+- 選択肢B: BML本体はレンダリングせず、既存の字幕/文字スーパーパイプラインで拾える範囲のテキスト情報のみ表示する「なんちゃってデータ放送」に留める
+- 選択肢C: 対応自体を見送り、非対応と明記する（TVer等の主要配信アプリも同様に非対応）
+
+### 次のステップ
+このバージョンでの着手は非推奨。次々バージョン以降の検討事項として保留し、必要なら選択肢Bの限定対応から着手を検討。
+
+---
+
+## 7. Forkリポジトリから発掘した取り込み候補機能
+
+**実現度: 高（個別移植前提）**
+
+10件のforkを調査。うち大半は独自コミットなし、または既に本家へPRマージ済み（`stuayu`のCloudflare Zero Trust対応→PR#99、`ysnst`のIssue#90修正→PR#93など）。
+
+### 最有力: `hiperjack/Komorebi` の `custom` ブランチ
+`features/1.1.0` 比で未取込みの11コミット・48ファイル差分。マージベースが2026-06-18頃と古いため `git merge` はコンフリクト過多で非現実的、**機能単位での個別移植**が現実的。
+
+含まれる機能（抜粋）:
+- **CM自動スキップ**（自然再生でCM区間先頭を跨いだ場合のみ発動、手動シークでは非発動という設計が丁寧）
+- **再生速度の永続化**（DataStoreに保存、ファイル・再起動を跨いで維持）
+- **字幕フォント追加**（「Rounded M+ 1m for ARIB」同梱）
+- **EPGStation風「ブルー」テーマ**（ダーク/ライト両対応）
+- **サブメニュー操作性改善**（オーバーレイ表示中のCH+/-・早送り巻き戻し有効化、**play/pauseメディアキー対応（本家未実装と明記あり）**、無操作5秒での自動クローズ）
+- **番組表拡充**（メディアキーで前日/翌日ジャンプ、過去7日分の追加読み込み、番組詳細から同時間帯録画への「録画を再生」導線、番組表グリッド上の録画済み番組の赤枠表示）
+- **KonomiTV互換性改善**（`has_key_frames`廃止（2026-05-30〜）への追従）
+- **`app/src/test` にJUnit4テストを新規追加**（EPG関連の純粋ロジックを`ui/epg/logic`へ分離してテスト化）— 合意済みの「テスト基盤方針」実例として参考価値あり
+
+### 次点
+`babizo/Komorebi` の `personal/komorebi-custom` に残存する1コミット「Preserve playback and subtitle improvements」（SMB再生・字幕関連）。内容精査は未実施。
+
+### 次のステップ
+1. `hiperjack/custom` の各機能を個別にdiff確認し、価値の高いもの（CM自動スキップ、再生速度永続化、メディアキー対応あたりが特に有望）から移植を検討
+2. `babizo` の残存コミットの内容確認（優先度低）
+
+---
+
+## 8. バックエンド側BDオーサリング機能（BackupBDAV相当）とKomorebiからの操作
+
+**実現度: 中**（Komorebi側は軽い。本体はサーバ側ツールの新規開発であり、Androidアプリの案件というより付属ツールの案件）
+
+### 既存インフラとの噛み合わせ
+
+EDCB連携は既に「EDCB内蔵HTTPサーバ（EMWUI, mongoose + Lua）上に置いた `KomorebiConfigurator/komorebi_resolver.lua` をKomorebiがHTTPで叩いてJSONを受け取る」という経路を持っている（`EdcbLiveRepository.kt:59` の `$baseUrl/komorebi/resolver.lua`、`EdcbRecordRepository.kt:91` の共通設定取得）。
+
+したがって**BDオーサリングのためにEDCBのTCPバイナリプロトコル（`data/api/edcb/`）を触る必要はない**。`resolver.lua` に以下3つの窓口を増設すれば、Komorebi側はRetrofitで叩くだけで済む。
+
+| 窓口 | 役割 |
+|---|---|
+| ジョブ投入 | 録画ファイルのリスト + 出力先 + メディア容量を受け取り、ジョブIDを返す |
+| 進捗照会 | ジョブIDに対して 状態（待機/変換中/書き込み中/完了/失敗）・進捗率・エラー文言を返す |
+| キャンセル | 実行中ジョブの中断 |
+
+### 実処理をどこに置くか
+
+Luaで重処理（TS解析・多重化・ディスク書き込み）は現実的でないため、実変換は **`KomorebiThumbnailer` / `KomorebiConfigurator` と同系統の独立ツール**（仮称 `KomorebiDiscWriter`）に持たせ、`resolver.lua` はジョブキューへの投入と状態ファイルの読み出しだけを担う。CLAUDE.mdに記載のある「付属ツールはアプリ本体とビルド系統が異なる独立ツール」という既存構成に素直に乗る形。
+
+実装言語は、Windows前提でよければ `KomorebiConfigurator` と同じ .NET が有力（IMAPI2 による書き込みにも直結する）。クロスプラットフォームを意識するなら `KomorebiThumbnailer` と同じ Python も選択肢。
+
+### 技術的な難所: 変換そのもの
+
+BDAVは BDMV と異なり**音声をAACのまま格納できる**のが録画用途での最大の利点で、再エンコードを避けられる。一方で自動化に使えるツールが弱い。
+
+- **tsMuxeR** — CLIあり。ただし BDMV / AVCHD 出力が主体で、BDAV（`BDAV/STREAM/*.m2ts` + `CLIPINF/*.clpi` + `PLAYLIST/*.mpls` + `info.bdav`）の生成には向かない。
+- **MakeBDAV** — BDAVを作れるが Windows GUI ツールで、コマンドラインからの無人実行に乗せづらい。
+- **自前実装** — CLPI / MPLS / info.bdav の規格実装が必要。ここが本項目で最も重い部分であり、実質「小さなオーサリングライブラリを1本書く」に相当する。
+
+この3択のどれを取るかが、本項目の工数を決める分岐点。既存ツールをラップできるならサーバ側ツールは数百行で済むが、自前実装に踏み込むと規模が一桁変わる。**着手前にまず「無人実行可能なBDAV生成手段が本当に存在するか」の検証から入るべき**。
+
+### 段階を切る（失敗コストが非対称なため必須）
+
+| 段階 | 内容 | 失敗時のコスト |
+|---|---|---|
+| **v1** | 録画を選択して **BDAVフォルダ / ISOイメージを生成**するところまで | ディスク容量のみ。やり直し自由 |
+| **v2** | 実ディスクへの書き込み（Windows: IMAPI2、Linux: cdrecord 等） | **BD-Rメディアを1枚消費し、リトライ不可** |
+
+v1で「生成物を別途手動で焼く」運用が成立するため、v1だけでも実用価値がある。v2は失敗が物理的に不可逆なので、v1が安定してから分離して着手するのが妥当。
+
+### Komorebi側のUI
+
+- **録画一覧の複数選択UIが現状存在しない**（`RecordListScreen` / `RecordGridContent` は単一選択前提）。これが唯一のまとまったアプリ側実装。
+- 選択した録画の合計サイズと BD-R 25GB / BD-R DL 50GB の残容量を表示するビュー。
+- ジョブ進捗の表示。ライブ/再生と違い長時間かかるため、画面を離れても進捗を追える場所（設定画面配下か、ホームの通知領域）が要る。
+- **機能はEDCBバックエンド限定にする**のが既存パターンと整合（`backendType == "EDCB"` ガード。KonomiTV / EPGStation では非表示）。`DtvProviderProxy` の4インターフェースは汚さない。
+
+### 次のステップ
+
+1. **無人実行可能なBDAV生成手段の有無を検証**（tsMuxeRのBDAV可否、MakeBDAVのCLI可否、または自前実装の規模見積り）。ここで結論が変わると以降の計画が全部変わるため最優先。
+2. `resolver.lua` に3窓口を追加し、ダミージョブを返すだけのモックで Komorebi 側の疎通と進捗UIを先に作る（サーバ側ツールの完成を待たずに並行できる）。
+3. `KomorebiDiscWriter` の実装（v1: BDAVフォルダ/ISO生成まで）。
+4. Komorebi側に録画複数選択UIと容量計算を実装。
+5. v2（実書き込み）は v1 の安定後に分離して検討。
+
+### 【2026-09-27 方針決定: 保留】
+
+実装難易度が高いため、本バージョンでは着手しない。特に「無人実行可能なBDAV生成手段が存在するか」が未検証で、ここで自前実装が必要と判明すると規模が一桁変わるリスクを抱えている。**着手する場合は、まず上記「次のステップ」の1（生成手段の調査）だけを単独の調査タスクとして切り出し、その結果を見てから計画を立て直すこと。**
+
+---
+
+## 9. 新バックエンド `denpa` への対応
+
+**実現度: 低〜中**（現状のdenpa APIのままでは実質困難。上流へのAPI追加要望が前提）
+
+対象: <https://github.com/danything/denpa> — 「チューナーを挿して起動すれば設定ファイルを1行も書かずに使える自宅用テレビ録画サーバ」。Mirakurun / EDCB を必要としない自己完結型。構成は TypeScript + SvelteKit（サーバ本体）と C#（チューナーエージェント）。
+
+### 調査した公開API（`src/routes/api` 配下の全量）
+
+```
+api/bml/{confirm,post,proxy}
+api/events                     (SSE想定)
+api/font
+api/health
+api/live/ticket                (POST: 使い捨てチケット発行)
+api/programs/[id]              (番組individual)
+api/recordings/[id]            (録画individual)
+api/recordings/[id]/file       (mkv本体)
+api/recordings/[id]/playlist
+api/recordings/[id]/chapters
+api/recordings/[id]/poster
+api/recordings/[id]/frame
+api/recordings/[id]/resume
+api/recordings/[id]/share
+api/recordings/[id]/captions.sup
+api/recordings/[id]/databroadcast
+api/services/[serviceId]/{logo,logo-data}
+api/sync                       (POST: 番組表の即時再取得)
+```
+
+### 障壁(a): 一覧取得APIが存在しない
+
+`programs/[id]` / `recordings/[id]` は**個別ID取得のみ**で、一覧エンドポイントがない。denpaのUI側は SvelteKit の `+page.server.ts` がサーバ内でDBを直接読んでいるため、外部クライアント向けの一覧APIが必要とされていない。
+
+Komorebiが `EpgProvider` / `RecordProvider` を実装するには**番組表の期間取得と録画一覧の取得が必須**なので、**denpa側への一覧API追加なしには対応そのものが成立しない**。
+
+### 障壁(b): ライブ配信方式が徹底的に独自
+
+`docs/stream.md` によれば、HLS/DASHを一切採用せず、**単一WebSocket上に独自バイナリフレーミングで多重化**したものを MSE（Media Source Extensions）へ直結する設計。
+
+```
+[1byte channel][8bytes timestamp(90kHz)][payload]
+  0x00/0x01: 映像 fMP4 init / media segment
+  0x10/0x11: 音声 fMP4 init / media segment
+  0x20:      字幕 PNG（座標+時刻付き）
+  0x30:      データ放送モジュール（JSON）
+```
+
+コンテナは fMP4 のみ、コーデックは AV1+Opus（推奨・6.6Mbps）または H.264+AAC（既定・14.5Mbps）を設定で選択。**ドキュメントに「VLC等の外部プレイヤーは非対応」と明記されている**。
+
+Media3から扱うには「WebSocket受信 → チャネル分離 → init+mediaセグメントの再構成 → 独自DataSourceとしてExoPlayerへ給餌」＋「字幕PNGのサイドチャネル処理」を全て自作することになり、大規模。**ライブ対応は現実的でない。**
+
+ただし副作用として興味深い点がある: denpaは**サーバ側で libaribcaption に字幕を描かせて絵と時刻だけを送る**設計なので、このバックエンドに限ってはKomorebi側の字幕デコード処理が不要になる。
+
+### 現実的な段階案: 録画再生のみ先行
+
+録画側は逆にかなり筋が良い。
+
+- `api/recordings/[id]/file?token=…` は **mkv（H.264 or AV1 + Opus）のHTTP GET**。Media3 の `MatroskaExtractor` でそのまま再生できる（署名リンクは24時間有効、実装は `share.ts`、DBは `share_links`）。
+- `chapters` / `poster` / `frame` / `resume` が揃っているため、**チャプター・サムネイル・レジューム再生が全部APIで取れる**。Komorebiが独自に `KomorebiThumbnailer` で用意している領域がサーバ側で解決済み。
+- 字幕は `captions.sup` = **PGS形式**で返る。Media3にはPGSデコーダが存在するため、libaribcaptionを通さずに字幕を出せる。
+- AV1はデバイス依存なので、**H.264設定のサーバでのみ確実**。項目11のデコーダ判別機構があれば「この端末でAV1が再生可能か」を事前判定できる（項目11との相乗効果）。
+
+### 認証
+
+- **署名付きリンク** — `?token=…`（24時間有効）。録画ファイル取得用。
+- **ライブ用チケット** — `POST /api/live/ticket` で30秒有効の使い捨て札を取得し、URLに付けてWebSocket接続。
+- **信頼ネットワーク** — 環境変数 `TRUSTED_NETWORKS`（CIDR、例 `10.10.0.0/16`）に含まれる送信元IPは認証をスキップ。**宅内TV運用ならこれで実装を大幅に簡略化できる。**
+- リバースプロキシ経由では `ADDRESS_HEADER=x-forwarded-for` の設定が必要。
+- OIDCやAPIキーの実装記述はドキュメントに見当たらなかった。
+
+### アーキテクチャ上の位置づけ
+
+KonomiTV / EDCB / EPGStation に続く**第5のバックエンド**（Mirakurunを含めれば）になる。CLAUDE.mdに記載の通り、`DtvProviders.kt` の4インターフェースへの追加と `DtvProviderProxy` のルーティング分岐、`SettingsRepository.backendType` への値追加（`"DENPA"`）が必要。バックエンド追加そのものの作業量は EPGStation対応（PR#103 / #112）で実績があり見積り可能。
+
+### 次のステップ
+
+1. **上流（danything/denpa）にIssueを立て、一覧API追加の意向を確認する。** これが通らない限り着手できないため最優先。同時に「外部クライアント向けにHLS出力を用意する予定があるか」も聞いておくと、ライブ対応の見通しが立つ。
+2. 返答を待つ間は他項目を進める（本項目は外部依存でブロックされる性質のため、スケジュールのクリティカルパスに置かない）。
+3. 一覧APIが用意された場合、**録画再生のみのバックエンドとして先行実装**（`RecordProvider` + `EpgProvider` の一部）。ライブは非対応として明示する。
+4. `captions.sup`（PGS）→ Media3 PGSデコーダ経路の疎通確認は、他バックエンドに影響しない独立検証として先に試せる。
+
+### 【2026-09-27 方針決定: 保留】
+
+実装難易度が高く、かつ**denpa側への一覧API追加という外部依存でブロックされる**ため、本バージョンでは着手しない。着手する場合も、まず上流へのIssue（上記「次のステップ」の1）だけを先行させ、返答が得られてから計画すること。返答が得られない／一覧APIの追加予定がない場合は、対応を断念する判断も含めて検討する。
+
+---
+
+## 10. 低スペック機での動作速度の高速化
+
+**実現度: 高**（効果の大きい未実施項目が2つ特定できている。かつ計測手段が既にリポジトリ内にある）
+
+### 既に手が入っている部分（重複して着手しないための整理）
+
+- `MainApplication.newImageLoader()` — Coilのメモリキャッシュを25%固定（Coil既定は `isLowRamDevice` 判定で15%まで落ち、TV端末でロゴが押し出されて毎回デコードし直す問題があった）、ディスクキャッシュ256MB、`respectCacheHeaders(false)`（ロゴエンドポイントのno-cacheヘッダを無視）、`crossfade(false)`（TVでのフェード合成は描画コストが高い）。
+- `MainApplication.onCreate()` — `WorkManager.getInstance()` の初回初期化（Room DB構成・ForceStopRunnable起動）がメインスレッドを占有して初回フレーム描画を遅らせるため、最低優先度の専用スレッドへ退避済み。
+- `ColdStartDiag` — プロセス開始からの経過時間を主要通過点でログ出力する計測コード（`adb logcat -s ColdStartDiag:I`）が既に入っている。
+- `baselineprofile` モジュール（`alias(libs.plugins.baselineprofile)`、`"baselineProfile"(project(":baselineprofile"))`）が導入済み。
+
+つまり「よく言われる一般的な最適化」は概ね済んでいる。残っているのは以下2点。
+
+### 未実施(a): R8（コード圧縮）とリソース圧縮が無効のまま
+
+`app/build.gradle.kts` の `buildTypes.release` が以下の状態でコメントアウトされている。
+
+```kotlin
+release {
+//            isMinifyEnabled = true       // コード圧縮を有効化
+//            isShrinkResources = true     // 未使用の画像やリソースも削除
+    proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+}
+```
+
+`proguard-rules.pro` は28行・`-keep` 5件のみで、本格運用の準備はされていない。有効化すればメソッド数とDEXサイズが減り、クラスロード時間と起動時間が改善する。**Baseline Profile が既に入っている一方でR8が無効という組み合わせは、最適化の効果を取り逃している状態**。
+
+ただしリスクは小さくない。
+
+- **Room / Retrofit / Gson / Hilt** — リフレクションとアノテーション処理に依存するため keep ルールの整備が必須。
+- **JNI（`NativeLib`）** — `native-lib.cpp` から参照されるKotlin側のクラス・メソッド名が難読化されると実行時に `NoSuchMethodError` になる。JNIブリッジは `-keepclasseswithmembernames` 等で明示保護が必要。
+- **パッチ版Media3（1.7.1-komorebi）** — `ExtractorsFactory` 等のリフレクション経路で keep 漏れが出やすい。公式リリース版と挙動が異なる可能性がある点（CLAUDE.md記載）も踏まえ、慎重な回帰確認が必要。
+- **libVLC（`libs/*.aar`）** — SMB再生パスもJNI依存。
+- 難読化後のクラッシュはスタックトレースが読めなくなるため、`mapping.txt` の保管運用もセットで決める必要がある。
+
+**作業ブランチで「有効化 → keepルール整備 → 全画面の実機回帰 → 計測」を1サイクル回してから判断する案件。** 一度に `isMinifyEnabled` と `isShrinkResources` の両方を入れず、まずコード圧縮のみで様子を見るのが安全。
+
+#### 【2026-09-27 方針決定: 本バージョンでは見送り】
+
+**過去に有効化を試したところ、アプリがほぼ機能しなくなった実績がある**（`build.gradle.kts` にコメントアウトが残っているのはその痕跡）。上記のkeepルール整備コストが高く、得られる効果も未計測でリスクに対する見返りが読めないため、**本バージョンでは着手しない**。
+
+ただし将来の再挑戦に備えて、手順を記録しておく。
+
+1. **まず `StartupBenchmarks` によるベースライン計測を行う。** 「R8で何ms速くなるのか」が分からないまま整備コストを払う判断はできない。計測して効果が小さいと分かれば、この項目は恒久的に見送って構わない。
+2. **一括有効化ではなく、`isMinifyEnabled = true` + `-dontobfuscate` から始める。** R8には「不要コードの削除・最適化」と「難読化（クラス名・メソッド名のリネーム）」の2つの働きがあり、**過去に機能しなくなった原因は後者である可能性が高い**。Room / Retrofit / Hilt はクラス名やフィールド名を実行時に参照し、JNI（`native-lib.cpp` ↔ `NativeLib`）はメソッド名で結合しているため、リネームされると壊れる。`-dontobfuscate` を付ければ**削除・最適化の効果だけを安全に取れる**ので、まずこの状態で全画面の動作を確認する。
+3. それが通ってから難読化を有効化し、壊れた箇所を keep ルールで1つずつ潰す。最低限 JNIブリッジ（`-keepclasseswithmembernames`）、Roomのエンティティ・DAO、Retrofitのインターフェースとレスポンスモデル、Hiltの生成物、パッチ版Media3 と libVLC のネイティブ結合部が対象。
+4. `isShrinkResources` はさらに後。リソース削除の失敗は実行時のリソース未検出として現れ、原因の特定が難読化より面倒。
+5. `mapping.txt` の保管運用（リリースごとにGitHub Releasesへ添付する等）を難読化の有効化前に決めておく。これがないと難読化後のクラッシュ報告を読めない。
+
+### 未実施(b): ライブ信号情報の毎秒ポーリングがパネル非表示中も回り続ける
+
+既知課題として以前から挙がっていた項目（`memory` の既知課題6）の実体を特定した。
+
+`LivePlayerViewModel.kt:1336-1379` の `startSignalPolling()` が `while (true) { … delay(1000) }` で回り続け、その中で
+
+- `String.format` を1周あたり6回以上（ビットレート・垂直周波数・バッファ長・音声情報…）
+- `SignalMetadata` データクラスを毎秒新規生成して `_mainSignalInfo` StateFlow へ書き込み → **購読側の再コンポーズを毎秒誘発**
+
+を行っている。デュアル再生時は `_dualPlayer` 側も含めて2系統。**信号情報パネルを表示していないときもこれが動き続ける**ため、低スペック機では常時の無駄な負荷になる。
+
+修正は軽い。パネルの表示状態を条件にして、購読されている間だけ値を流す形（`stateIn(started = WhileSubscribed())` 相当、またはパネル表示フラグでジョブを起動/停止）にすれば済む。**一点修正で済み、かつ効果が体感しやすい**ため費用対効果が最も高い。
+
+なお `HomeLauncherScreen.kt:113` の `delay(60000)` ループ、`EpgViewModel.kt:304` の `delay(10000)` は間隔が長く、優先度は低い。
+
+#### 【2026-09-27 方針決定: 実施する】
+
+負荷そのものはさほど高くないと見られるが、修正が一点で済み効果も見込めるため実施する。**本項目で唯一着手するのはこの(b)のみ**（(a) R8は見送り）。
+
+実施時の注意: 信号情報パネルは表示/非表示が頻繁に切り替わるため、ジョブの起動と停止を繰り返してもフラつかないこと（パネルを開いた直後に値が空欄のまま数秒待たされないよう、停止中も最後の値を保持する）を確認する。デュアル再生時は `_mainSignalInfo` / `_dualSignalInfo` の2系統があるため片方だけの対応漏れに注意。
+
+### 「推測で直す」から「測って直す」へ
+
+本項目で最も重要なのは、**計測手段が既に揃っていること**。
+
+- `baselineprofile/src/main/java/com/example/baselineprofile/StartupBenchmarks.kt` が存在するため、(a)(b) の before/after を起動時間の数値として出せる。
+- 同じ Macrobenchmark で `frameTimings` を取れば、EPG Canvas描画（`ModernEpgCanvasEngine`）やホーム画面スクロールのジャンクを定量化できる。これは項目1・項目4・項目12の効果測定にもそのまま使える。
+- `ColdStartDiag` のログと合わせれば、コールドブート時のどの区間が支配的かを特定できる。
+
+既知課題6が「実測未検証」のまま長く残っていた原因は測る手段の不在だったが、現在は解消している。**まず計測してから優先順位を決め直すべき**。
+
+### 次のステップ
+
+- **(b) 信号情報ポーリングの条件化: 完了**（2026-09-27、PR #118）。パネル表示中のみ回す形にし、開閉・再表示・デュアル/PiP 復帰を含めて実機動作確認済み。調査の過程で `_dualSignalInfo` は存在せず信号情報は main の1系統のみと判明した（デュアル表示中はパネル自体が非表示）。
+- **(a) R8有効化: 本バージョンでは実施しない**（上記の方針決定を参照）。
+- **計測: 当面は体感確認で進める**（下記の方針決定）。気になる点が出た時点で `frameTimings` のベンチを作成する。
+
+#### 【2026-09-27 方針決定: 計測は当面おこなわず体感確認で進める】
+
+ポーリング修正(b)の効果は**起動時間の計測（`StartupBenchmarks`）では測れない**。起動後のライブ再生中の負荷であるため、数値で見るには Macrobenchmark の `frameTimings` でライブ再生中のジャンクを測るベンチシナリオを新規に書く必要がある。
+
+加えて、**検証環境は Fire TV Stick 4K Max 第1世代がメインで、いわゆる低スペック機が手元にない**という制約がある。ベンチを整備しても「低スペック機で速くなったか」を直接確認できるわけではないため、整備コストに対する見返りが小さい。
+
+そのため当面は**体感確認で進め、気になる点が出てきた時点で `frameTimings` のベンチを作成する**方針とした。項目1（解像度対応）や項目4（UI刷新）でレイアウトを触る際にジャンクが気になれば、そのタイミングで整備する。
+
+なお「まず `StartupBenchmarks` でベースラインを取る」という当初の手順は、見送りとなった項目10(a)（R8）の効果測定を前提にしたものだった。R8 を見送り、先にポーリング修正を入れた時点でこの前提は失われている。
+
+---
+
+## 11. デコーダ対応状況の確認・動作判別機構
+
+**実現度: 高**（Honorebiに完成品があり、ほぼそのまま移植できる）
+
+### 現状
+
+Komorebi本体には `MediaCodec` 関連の参照が実質存在しない（`CustomPlayerManager.kt:20` のコメントで「システム標準(MediaCodec)よりも拡張(FFmpeg)を優先」と触れているだけ）。端末が何を再生できるかを事前に知る手段がなく、再生してみて失敗するまで分からない。
+
+### 参考実装: Honorebi（`makeding/Honorebi` の `h-dev` ブランチ）
+
+該当ファイルは2つ。
+
+- `app/src/main/java/com/beeregg2001/komorebi/ui/setting/DeviceCapabilityDetector.kt`（**137行、完全に自己完結**）
+- `app/src/main/java/com/beeregg2001/komorebi/ui/setting/DeviceCapabilitiesScreen.kt`（表示UI）
+
+`DeviceCapabilityDetector` が返す `DeviceCapabilityReport` の内容:
+
+| フィールド | 取得方法 |
+|---|---|
+| `deviceName` | `Build.MANUFACTURER` + `Build.MODEL` |
+| `androidVersion` | `Build.VERSION.RELEASE` + API level |
+| `hevcDecoders` | `MediaCodecList(ALL_CODECS)` から非エンコーダかつHEVC対応のコーデック名を列挙 |
+| `maxVerifiedMode` | 8K60 → 8K30 → 4096×2160@60 → 4K60 → 4K30 → 1080p60 の順に `videoCapabilities.areSizeAndRateSupported()` で総当たりし、最初に通ったモードのラベル |
+| `supportsHevcMain10` | `profileLevels` に `HEVCProfileMain10` / `Main10HDR10`(API24+) / `Main10HDR10Plus`(API29+) が含まれるか |
+| `supports4k60` / `supports8k30` / `supports8k60` | 同じ `areSizeAndRateSupported()` 判定の個別結果 |
+| `hdrTypes` | `Display.HdrCapabilities.supportedHdrTypes` → HLG / HDR10 / HDR10+ / Dolby Vision のラベル |
+| `maxReportedAudioChannels` | `AudioManager.getDevices(GET_DEVICES_OUTPUTS)` の `channelCounts` 最大値 |
+
+さらに派生プロパティとして
+
+```kotlin
+val supportsBs4kDirect: Boolean get() = supports4k60 && supportsHevcMain10
+val supportsBs8kDirect: Boolean get() = supports8k60 && supportsHevcMain10
+```
+
+を持つ。**すべての取得箇所が `runCatching` で囲われており例外安全**、依存はAndroid標準API（`MediaCodecList` / `MediaCodecInfo` / `MediaFormat` / `Display` / `AudioManager` / `WindowManager`）のみで、Honorebi固有のクラスを一切参照していない。API23以前への配慮（`Build.VERSION.SDK_INT` 分岐、`defaultDisplay` のdeprecated経路）も入っており、Komorebiの `minSdk = 24` でそのまま動く。
+
+### Komorebiに取り込む価値
+
+2026-09-24のBS4K Original画質対応（PR#111でマージ済み）と直接噛み合う。`supportsBs4kDirect` があれば、
+
+- 設定画面に「この端末でBS4Kを直接再生できるか」を事前表示できる
+- 再生できない端末では原画質を選択肢から外す、または警告を出す
+- ユーザーからの「BS4Kが映らない」問い合わせに対し、端末側の能力かサーバ側の問題かを切り分けられる
+
+項目9（denpa対応）でも「この端末でAV1が再生できるか」の判定に使える。
+
+### 移植時に足したい点
+
+1. **HEVC以外のコーデックを追加** — 現状の実装はHEVC専用。**MPEG-2（地上波・BSの直接再生に直結）と H.264 の判定を追加すべき**。さらに AV1 を足せば項目9に効く。
+2. **「対応と報告される」と「実際に再生できる」は別** — `areSizeAndRateSupported()` が true でも、コーデックインスタンス数の上限、セキュアバッファの要求、Media3側のフォーマット判定で失敗することがある。**短いサンプルを実際にデコードしてみる「実走テスト」を併設する**と信頼できる値になる（設定画面から手動実行する診断ボタンの形が妥当）。
+3. **音声の判定範囲** — `maxReportedAudioChannels` は出力デバイスが報告する最大チャンネル数だけを見ている。AAC 5.1 / Dolby Digital のパススルー可否（`AudioManager.getDevices` の `encodings`）まで見ると、2026-09-24に保留とした22.2ch無音化問題の切り分けにも使える。
+4. **ライセンス・出所** — 他人のフォークのコードなので、取り込み時にソースコード上へ出所を明記する（既に `libaribcaption` 導入時に同様の判断を行っている）。
+
+### 次のステップ
+
+1. `DeviceCapabilityDetector.kt` / `DeviceCapabilitiesScreen.kt` をKomorebiへ移植し、設定画面に「端末情報・デコーダ対応状況」として追加。
+2. MPEG-2 / H.264（+ AV1）の判定を追加。
+3. BS4K原画質の選択肢と `supportsBs4kDirect` を連動させる（警告表示または選択肢の非表示）。
+4. 「実走テスト」ボタンの追加を検討。
+
+---
+
+## 12. フォーカス管理の時間依存の整理（追加提案）
+
+**実現度: 中**（局所修正では済まない設計案件。ただし低スペック機の体感に最も直結する）
+
+### 現状
+
+`safeRequestFocus` の呼び出しが**214箇所**あり、その多くが `delay(...)` の直後に置かれている。
+
+```
+LivePlayerScreen.kt:573   delay(100)
+LivePlayerScreen.kt:586   delay(100); mainFocusRequester.safeRequestFocus(TAG)
+LivePlayerScreen.kt:594   delay(200)
+LivePlayerScreen.kt:737   delay(200); mainFocusRequester.safeRequestFocus(...)
+LivePlayerScreen.kt:859   delay(200); mainFocusRequester.safeRequestFocus(...)
+HomeLauncherScreen.kt:303,315,348,373,380,418,438,548  delay(80)〜delay(300)
+RecordListContent.kt:159  delay(100); detailPanelFocusRequester.safeRequestFocus(...)
+```
+
+### なぜ問題か
+
+これは「Composableがまだ配置されていない時点で `requestFocus()` しても効かない」というタイミング問題を、**待ち時間の決め打ちで回避している**状態。結果として、
+
+- **低スペック機では待ち時間が足りない** — レイアウト完了が遅れるとフォーカスが当たらず、「リモコンが効かない」「フォーカスが意図しない場所へ飛ぶ」という症状になる。低スペック機のUX不満（項目10）の一部は、処理速度そのものよりこちらが原因である可能性がある。
+- **高速機では純粋な待ち時間の損失** — 画面遷移ごとに100〜300msの無駄が積み上がる。
+- **リモコン連打への耐性が低い** — 待ち時間中に次のキーが来た場合の振る舞いが保証されない。
+- **回帰しやすい** — 定数を変えると別の画面が壊れる、という相互依存が生まれやすい。既に `HomeLauncherScreen.kt:54` に「以前は各タブで一律 `delay(500)`〜`delay(800)` を挟んでいた」という改善履歴のコメントが残っており、この方向の調整が繰り返されてきたことが分かる。
+
+### 方針
+
+時間で待つのをやめ、**対象が配置されたことを検知してからフォーカスを要求する**形に置き換える。`onPlaced` / `onGloballyPositioned` でレイアウト完了を待つ、あるいは `BringIntoViewRequester` や Compose 1.7以降のフォーカス関連APIを使う。214箇所を一括で書き換えるのは非現実的なので、**共通ヘルパー（既に `common/SafeFocus.kt` が存在する）の内部実装を差し替え、呼び出し側から `delay` を段階的に剥がしていく**のが現実的な進め方。
+
+### 【2026-09-27 追記】オーバーレイ画面のフォーカス閉じ込め（実機検証で判明した第2の課題）
+
+項目11（デコーダ判別機構）で新設した「テレビ再生能力」画面の実機検証（Fire TV Stick 4K Max 第1世代）で判明した、`delay` 依存とは別のフォーカス設計課題。
+
+#### 症状
+
+設定画面の上に重ねて表示される画面で、方向キーによってフォーカスが**裏の設定画面へ逃げる**。逃げるとその画面のキーハンドラへイベントが届かなくなるため、**戻るキーで画面を閉じられなくなる**（1回目は無反応、2回目でアプリのホーム画面まで抜けてしまう）。
+
+#### 原因
+
+設定画面のサブ画面・ダイアログは `SettingScreen.kt` の `Box` 内に重ねて描画されるだけで、**裏の設定画面の要素はフォーカス可能なまま残っている**。重ねた画面側で外向きのフォーカス移動を封じていないと、方向キーで裏側へ移動できてしまう。Compose には完全なフォーカストラップの機構がないため、各要素の `focusProperties` で `left` / `right` / `up` / `down` に `FocusRequester.Cancel` を指定して明示的に封じる必要がある。
+
+#### 既存の対策が Compose のバージョン更新で機能しなくなっている（2026-09-27 判明）
+
+`SettingScreen.kt:250` には**既に対策が書かれている**。
+
+```kotlin
+val isDialogOpen = uiState.activeDialog !is SettingDialogState.None
+…
+    .focusProperties { canFocus = !isDialogOpen }
+```
+
+ダイアログ表示中は設定画面本体をフォーカス不可にする意図であり、`isDialogOpen` の判定は `activeDialog !is None` なのでサブ画面も正しく含まれている。にもかかわらず実機ではフォーカスが裏へ逃げる。
+
+原因は **Compose 1.7 以降、focus properties が子孫へ継承されなくなった**こと。親ノードに `canFocus = false` を指定しても、子孫の各要素はフォーカス可能なまま残る。つまり**この対策は以前は機能していたが、Compose のバージョン更新に伴って黙って壊れた**と見られる。設定画面のサブ画面・ダイアログ全般が同じ影響を受けている。
+
+そのため、フォーカスを封じる指定は**実際にフォーカスを持つ要素自身**に付けなければ効かない。実例として、`OpenSourceLicensesScreen` の修正では当初親の `Column` に `focusProperties` を付けたが**まったく効果がなく**、一覧の各項目と本文の `Column`（`focusable` を持つ要素）へ付け替えて初めて機能した。
+
+#### 実機検証で分かった「効く方法」と「効かない方法」（2026-09-27）
+
+`OpenSourceLicensesScreen` の修正を実機で2回試した結果、`focusProperties` は**付ける場所の条件が厳しい**ことが分かった。
+
+| 方法 | 結果 |
+|---|---|
+| 親のレイアウト（`Column` 等）に `focusProperties` | **効かない**。フォーカスを持たないノードに付けても、子からの移動時には参照されない |
+| `Surface(onClick = …)`（TV Material3 の ClickableSurface）に外から `focusProperties` | **効かない**。内部に `focusable` を持つため外から渡した指定はその祖先の位置になり、Compose 1.7 以降は継承されない |
+| `Modifier.focusProperties{}` と `Modifier.focusable()` を**同一チェーンに並べる** | **効く**（`DeviceCapabilitiesScreen` で実証） |
+| `onKeyEvent` で方向キーを消費する | **効く**。フォーカスされた要素とその祖先には確実に届く |
+| `Modifier.focusRequester()` を `focusable()` の**後**に置く | **`requestFocus()` が何も起こさない**。focus target に結び付かないため。`OpenSourceLicensesScreen` のライセンス本文がこれで、決定キー・方向キーのどちらでも本文へフォーカスできず、本文のスクロールも使えない状態が元から続いていた（リポジトリ内の他の全箇所は `focusRequester` → `focusable` の正しい順序） |
+
+つまり**内部に `focusable` を持つコンポーネント（TV Material3 の各種 Surface など）には外から `focusProperties` で封じ込めができない**。この条件は見た目からは判別できないため、`onKeyEvent` でキーを消費する方式のほうが当てにしやすい。
+
+さらに、`focusProperties` を安易に足すと**入る方向の移動まで壊れる**。ライセンス本文に `right` / `up` / `down` の Cancel を足したところ、一覧から右キーで本文へ入れなくなる回帰が発生した。
+
+#### 戻るキーの根本対策は設定画面側にあった
+
+フォーカスが裏へ逃げた状態で戻るキーを押すと**ホーム画面まで抜けてしまう**のは、手前の画面の `BackHandler` が呼ばれないからではなく、**裏の `SettingScreen` の `onKeyEvent` が Back を受けて設定画面自体を閉じていた**ため（`SettingScreen.kt:252`）。裏が先に消費するので、手前の画面に `BackHandler` を置いても届かない。
+
+対策として `SettingScreen` の Back 処理に `isDialogOpen` の分岐を追加し、**ダイアログ・サブ画面表示中の戻るキーを `closeDialog()` へ読み替えた**。これは全ダイアログ・全サブ画面に効く根本対策であり、フォーカスの閉じ込めが完全でなくても「戻るキーで必ず手前の画面を閉じられる」状態を作れる。未確認の他のダイアログも同時に救われる。
+
+**教訓（1）**: 閉じ込め（逃がさない）は個々の画面の作りに左右されて確実性が低い。一方「逃げても閉じられる」経路を1箇所に用意するほうが確実で、影響範囲も広い。**共通化を設計する際は後者を土台に据えるべき。**
+
+**教訓（2）**: 重ねて表示する画面では、方向キーを「封じる」だけでなく**「移動先を明示する」**必要がある。Compose の既定のフォーカス探索は裏の要素も候補に含めるため、画面内の移動であっても任せられない。`OpenSourceLicensesScreen` は一覧→本文の右キー移動が実装されておらず既定の探索に任せていたため、裏へ飛んでいた。
+
+#### 残件: `OpenSourceLicensesScreen` の本文 → 一覧のフォーカス移動（UI刷新時に対応）
+
+PR #117 で他の症状は解消したが、**本文へ一度フォーカスを移すと左キーで一覧へ戻れない**症状が残っている。戻るキーで画面を閉じられるため操作不能ではなく、内容の閲覧・スクロールもできる状態のため、深追いせず残件とした。
+
+有力な仮説: `listFocusRequester` は一覧の**先頭項目（`index == 0`）にのみ**付いている。
+
+```kotlin
+.then(if (index == 0) Modifier.focusRequester(listFocusRequester) else Modifier)
+```
+
+`LazyColumn` の項目は画面外に出ると composition から外れるため、一覧を下にスクロールした状態では `listFocusRequester.requestFocus()` が対象を失って失敗する。加えて、仮に成功しても**フォーカスが先頭項目へ飛ぶ**ため、直前に見ていた項目の位置が失われるという設計上の問題も併せ持つ。
+
+正しくは「最後にフォーカスされていた項目へ戻す」必要があり、項目の識別と復帰先の保持が要る。**この画面は項目4（UI刷新）で作り替える方針で合意済み**（1,241行あり、ライセンス本文を巨大な文字列リテラルで直書きしている構造にも手を入れる価値がある）のため、作り替えの際に以下を設計へ織り込む。
+
+- 一覧の「最後にフォーカスされていた項目」への復帰
+- ライセンス本文をコード内の文字列リテラルから外部リソースへ移す
+- 上記の教訓（1)〜(3) を踏まえたフォーカス設計
+
+**教訓（3）**: `requestFocus()` の失敗は `runCatching` で包むと表に出ない。`OpenSourceLicensesScreen` は Modifier の順序ミスで本文へのフォーカス移動が**最初から一度も動いていなかった**が、`runCatching { … }` に隠れて長く気づかれなかった。フォーカス要求が効かない症状を追うときは、まず Modifier の順序（`focusRequester` が `focusable` より前か）を確認する。
+
+#### 【2026-09-29 追記】3つ目のパターン: プログラムからの `requestFocus()` による奪取
+
+**症状**: 同期エラーダイアログ（`SyncErrorDialog`）が表示されても、裏のホーム画面へフォーカスが移ってしまい操作できなくなる。方向キーを封じても直らなかった。
+
+**原因**: ホーム画面に**フォーカス迷子検知**（`HomeLauncherScreen.kt` の `LaunchedEffect`。ログに「フォーカス迷子を検知（hasFocus=… stranded=…）。復帰を試みます」と出る）があり、フォーカスが失われると自動で復帰させる。これがダイアログ表示中にも動き、ダイアログからフォーカスを奪い返していた。
+
+**`focusProperties` は方向キーの移動先しか制御できず、プログラムからの `requestFocus()` は防げない。** 対策は「オーバーレイ表示中であることを復帰機構側に伝える」しかない。
+
+既に2箇所の抑制条件が存在する。
+
+| 箇所 | 役割 |
+|---|---|
+| `MainRootBackground.isBackgroundFocusBlocked` | 背面ツリーをフォーカス不可にする |
+| `HomeLauncherScreen.isFocusSuspended` | フォーカス迷子検知を止める |
+
+設定画面と AI コンシェルジュパネルは過去に同じ問題を踏んで**両方に登録済み**だったが、同期エラーダイアログは**両方から漏れていた**。つまり**新しい全画面オーバーレイを追加するたびに、この2箇所への登録が必要**で、忘れると同じ不具合が再発する構造になっている。
+
+PR #123 では、表示可否の判定を `MainRootScreen` で一元化し `MainRootState.isSyncErrorVisible` として共有することで、ダイアログ本体の表示条件と抑制条件が同じ値を見るようにした。条件が分かれていると今回のような漏れが起きるため。
+
+#### 対策手法が画面ごとにバラバラになっている
+
+ここまでの調査で、**同じ目的に対して5通りの実装**が並存していることが分かった。
+
+| 画面 | 採っている手法 |
+|---|---|
+| `DeviceCapabilitiesScreen` | 各要素の `focusProperties` で方向キーを封じる |
+| `OpenSourceLicensesScreen` | `onKeyEvent` でキーを消費 ＋ `BackHandler` |
+| `SyncErrorDialog` | `focusProperties` ＋ `BackHandler` ＋ 上記2箇所の抑制条件への登録 |
+| `RobustUpdateDialog` | `focusGroup()` ＋ `focusProperties { exit = { Cancel } }` ＋ **自前のフォーカス奪還**（`onFocusChanged` で失ったら `requestFocus()` し直す） |
+| `SettingScreen` | `focusProperties { canFocus = !isDialogOpen }`（Compose 1.7 以降は機能していない） |
+
+どれが確実かは画面の構造（`Dialog` か `Box` オーバーレイか、内部に `focusable` を持つコンポーネントか）に依存し、**新規追加のたびに正解を探し直している**のが現状。`RobustUpdateDialog` の「奪われたら奪い返す」方式は、ホーム側の迷子検知と競合しうる点でも危うい。
+
+#### 戻るキーは `BackHandler` で受けるのが確実
+
+Compose のキーイベントは「フォーカスされた要素とその祖先」にしか届かないため、フォーカスが画面外へ出た時点で `onPreviewKeyEvent` / `onKeyEvent` のどちらも呼ばれず、**閉じる手段が失われる**。`BackHandler` は `OnBackPressedDispatcher` 経由でフォーカス位置に依存せず呼ばれるため、この取りこぼしを確実に受け止められる（`OpenSourceLicensesScreen` に導入済み。`RecordListScreen` / `SmbLibraryScreen` / `AiConciergePanel` など既存画面でも使われている）。
+
+**フォーカスの封じ込め（＝逃がさない）と `BackHandler`（＝逃げても閉じられる）は役割が違うため、両方入れるのが堅い。**
+
+#### 確認済みの影響範囲
+
+| 画面 | 状況 |
+|---|---|
+| `DeviceCapabilitiesScreen` | **修正済み・実機確認済み**（2026-09-27）。フォーカスを「2つのカード」と「閉じるボタン」の3要素に閉じ込めた |
+| `OpenSourceLicensesScreen` | **修正済み・実機確認済み**（2026-09-27、PR #117）。フォーカス脱出・戻るキー・本文へのフォーカス移動・本文のスクロールが解消。**残件: 本文から左キーで一覧へ戻れない**（下記） |
+| `SyncErrorDialog` | **修正済み・実機確認済み**（2026-09-29、PR #123）。方向キーの封じ込めだけでは直らず、ホーム画面のフォーカス迷子検知を止める必要があった（上記「3つ目のパターン」） |
+| `RobustUpdateDialog` | 独自に対策済み（`focusGroup()` ＋ `exit = Cancel` ＋ 自前のフォーカス奪還）。手法が他画面と揃っていない |
+| `SettingScreen` の `canFocus = !isDialogOpen` | **機能していない**（上記参照）。代わりに Back 処理へ `isDialogOpen` の分岐を追加し、戻るキーを `closeDialog()` へ読み替えた（2026-09-27） |
+| その他のダイアログ（`InputDialog` / `SelectionDialog` / `MultiSelectionDialog` / `GeminiSetupDialog` / SMB系） | **フォーカス脱出は未確認**だが、上記の Back 処理の分岐により「戻るキーで閉じられない」症状は解消される見込み |
+
+#### 戻るキーの処理方法が画面ごとに違う点も併せて整理したい
+
+- `OpenSourceLicensesScreen` — フォーカスされる**各要素自身**に `onKeyEvent` を置いて Back を処理
+- `DeviceCapabilitiesScreen` — **親の Column** に `onPreviewKeyEvent` を置いて一括処理（フォーカスが内側にあることが保証されて初めて成立する）
+
+どちらでも動くが、前者は要素追加のたびに書き忘れリスクがあり、後者は閉じ込めが前提になる。**閉じ込めと戻るキー処理はセットで設計すべき**であり、片方だけを共通化しても事故は防げない。
+
+#### 設計時に決めるべきこと
+
+項目5+12+4の設計フェーズの検討事項に以下を追加する。
+
+- **オーバーレイ画面のフォーカス閉じ込めと戻るキー処理を共通化するか** — 個々の画面で `focusProperties` を書く運用のままにするか、共通ラッパー（`OverlayScreen(onBack = …) { … }` のような Composable、あるいは `Modifier.focusTrap()` 相当のヘルパー）を用意するか。後者なら新規画面で書き忘れても事故が起きない。**新しいサブ画面を追加するたびに同じバグを踏む構造になっている**ため、共通化の価値は高い。
+
+### 項目4・項目5との関係
+
+項目5（キー論理アクション層）で `onKeyEvent` の散在を整理する際に触る画面と、本項目で触る画面がほぼ一致する。さらに項目4（UI刷新）でも同じ画面を触る。**この3つは別々に実施すると同じ画面を3回壊して3回直すことになる**ため、画面単位でまとめて着手する計画にすべき。
+
+### 次のステップ
+
+1. まず1画面（`RecordListScreen` 等、影響範囲が閉じているもの）で `delay` なしのフォーカス制御に置き換え、低スペック機と高速機の両方で挙動を確認する。
+2. うまくいけば `common/SafeFocus.kt` に共通化し、画面単位で順次移行。
+3. 移行の効果は項目10の frameTimings / 起動ベンチで測る。
+
+---
+
+## 全体まとめ（実現度一覧）
+
+### 2026-09-08 洗い出し分
+
+| # | 項目 | 実現度 | 特記事項 |
+|---|---|---|---|
+| 1 | 4K等高解像度対応 | 高 | 段階導入可。項目4・5・12と合わせて設計すると効率的（2026-09-26再確認済み） |
+| 2 | AIコンシェルジュ自動予約バグ | 高 | **完了**（2026-09-29、PR #120）。実際には3つの不具合が重なっており、EDCBの書き込み系コマンド全体の不具合も発見・修正 |
+| 3 | KonomiTVユーザー連携 | 中 | 既存コードはデッドコード、JWT認証基盤からの構築が必要 |
+| 4 | UI刷新 | 高 | 技術的障壁なし、工数(約12,600行規模)が大きいのみ |
+| 5 | リモコンキー拡充 | 高 | 機種差は「学習UI＋論理アクション層」で解く方針に更新（2026-09-26） |
+| 6 | データ放送(BML) | 低 | フル実装は非推奨、限定対応または見送りを提案 |
+| 7 | Fork機能移植 | 高 | `hiperjack/custom`から個別移植、CM自動スキップ等が有望 |
+
+### 2026-09-26 追加分
+
+| # | 項目 | 実現度 | 特記事項 |
+|---|---|---|---|
+| 8 | BDオーサリング（BackupBDAV相当） | 中 | **保留（2026-09-27）**。`resolver.lua`拡張＋独立ツール新設。BDAV生成手段の調査が最初の関門 |
+| 9 | denpaバックエンド対応 | 低〜中 | **保留（2026-09-27）**。上流への一覧API追加要望が前提。ライブは独自WebSocket方式のため非現実的 |
+| 10 | 低スペック機の高速化 | 高 | **(b)ポーリング条件化のみ実施、(a)R8は見送り（2026-09-27）**。計測手段（StartupBenchmarks）は既存 |
+| 11 | デコーダ対応状況の判別機構 | 高 | Honorebiに137行の完成品あり。ほぼコピーで動く。BS4K対応と噛み合う |
+| 12 | フォーカス管理の時間依存の整理 | 中 | `safeRequestFocus`が214箇所、多くが`delay`依存。低スペック機の体感に直結。項目4・5と合わせて設計フェーズを先に置く |
+
+---
+
+## 着手方針（2026-09-27 決定）
+
+2026-09-26の提案に対して検討し、以下のとおり決定した。
+
+### 作業ブランチの運用
+
+- 作業ベースは **`features/1.2.0-beta`**（`develop` から作成）。
+- 各機能は個別ブランチ（`fix/<内容>-1.2.0-beta` / `feat/<内容>-1.2.0-beta`）で実装し、PRで `features/1.2.0-beta` へ取り込む。
+- CLAUDE.md のリポジトリエチケット（ブランチ命名、`fix:` / `feat:` + `・` 区切り箇条書きのコミットメッセージ）に準拠する。
+
+### 着手する項目
+
+| 順 | 項目 | 方針 |
+|---|---|---|
+| 1 | **11. デコーダ対応状況の判別機構** | **完了**（2026-09-27、PR #116）。MPEG-2 / H.264 / AV1 判定とハードウェアデコーダー判別、音声パススルー列挙を追加。BS4K原画質との連動は未着手（残作業） |
+| 2 | **10(b). ライブ信号情報ポーリングの条件化** | **完了**（2026-09-27、PR #118）。実機動作確認済み。計測は当面おこなわず体感確認で進める |
+| 3 | **1. 解像度に合わせたUI最適化** | **完了**（PR #119 / #122）。実測により `Adaptive` 化は効果なしと判明し、`LocalDensity` 上書きによる「UI の大きさ」設定を実装。ダイアログへの反映漏れも修正済み。オーバースキャン余白の共通化とダイアログの作り替えは項目4へ |
+| 4 | **12. フォーカス整理** | **実装中**（設計: 2026-10-27、[`docs/design/focus_management.md`](../design/focus_management.md)）。段階0〜2（共通ヘルパー・録画一覧・ホーム）は PR #130 / #131 / #132 でマージ済み・実機確認済み。段階3（ライブ視聴）は PR #134 で実機確認待ち。残りは段階4（残りの画面を手法統一） |
+| 5 | **5 + 4. キー論理アクション層 / UI刷新** | 項目12の実装後に着手。設計は項目12の成果を踏まえてから |
+| — | **2. AIコンシェルジュ自動予約バグ** | **完了**（2026-09-29、PR #120）。EDCBの予約・自動予約の追加/変更/削除が全て成功しても失敗と表示される不具合も併せて修正 |
+| — | **7. Fork機能移植** | 個別移植なので、上記の合間に価値の高いものから順次差し込む |
+
+### 項目5 + 12 + 4 の設計フェーズ
+
+3項目は触る画面がほぼ一致するため（`LivePlayerScreen` / `HomeLauncherScreen` / `VideoPlayerScreen` / EPG関連）、**実装前に設計を固める**。別々に進めると同じ画面を3回壊して3回直すことになる。
+
+設計時に決めるべき事項:
+
+1. **論理アクションの一覧** — 選局UP/DOWN、直接選局（数字）、番組表、番組情報、字幕トグル、再生速度、チャプタースキップ、PinP… と、それぞれの既定 keyCode 割り当て。
+2. **`KeyBindingRepository` のデータ構造とDataStoreスキーマ** — 1アクションに複数keyCodeを許すか、逆に1keyCodeへ複数アクションを割り当てられてしまう衝突をどう防ぐか、既定へのリセット手段。
+3. **キー処理の責務分担** — どこまでを State 層（`LivePlayerState` / `VideoPlayerState`）に集約し、どこからを各Composableの `onKeyEvent` に残すか。現状 `HomeContents` / `VideoTabContent` / `EpgNavigationContainer` / `ModernEpgCanvasEngine` / `SceneSearchOverlay` / `VideoPlayerSubMenu` / `VideoPlayerOverlays` に散在している分の扱い。
+4. **フォーカス制御の新インターフェース** — `common/SafeFocus.kt` を `delay` 依存から「配置完了を待ってから要求する」方式へ差し替える際のAPI形。214箇所を一括変更はできないため、**新旧が共存できるインターフェースにすること**が要件。
+5. **UI刷新の対象画面と優先順位、デザイン方向性** — 現行の見た目を踏襲した整理か大幅刷新か。項目1の解像度対応と同時に設計する。
+6. **移行順序とリグレッション確認範囲** — 画面単位での移行手順と、各段階で実機確認すべき操作の一覧。
+7. **計測方法** — 項目10で整備する `StartupBenchmarks` / frameTimings を、フォーカス整理の効果測定にも流用する。
+8. **オーバーレイ画面のフォーカス閉じ込めと戻るキー処理** — 設定画面の上に重ねる画面がフォーカスを裏へ逃がし、戻るキーで閉じられなくなる問題（項目12の「2026-09-27 追記」参照）。個々の画面で `focusProperties` を書く運用のままにするか、共通ラッパーを用意するかを決める。`OpenSourceLicensesScreen` で同症状を実機確認済みのため、設計を待たずに個別修正を先行させる場合も、後で共通化できる形にしておく。
+9. **全画面オーバーレイの「登録」を1箇所にまとめる** — **対応済み**（PR #131）。`MainRootState.isForegroundOverlayVisible` を追加し、`MainRootBackground.isBackgroundFocusBlocked` と `HomeLauncherScreen.isFocusSuspended` の両方がこれを参照する形にした。新しいオーバーレイを追加したときの登録は1箇所で済む。**対策手法が画面ごとに5通りに分かれている現状の統一は、段階4（`docs/design/focus_management.md` の設計方針 F）で実施する。**
+
+設計の成果物は `docs/design/` 配下に置く（`docs/design/ts_seek_index.md` の前例に倣う）。
+
+### 見送り・保留する項目
+
+| 項目 | 判断 | 理由 |
+|---|---|---|
+| **10(a). R8 / リソース圧縮** | **見送り** | 過去の試行でアプリがほぼ機能しなくなった実績があり、keepルール整備のコストが高い。再挑戦する場合の手順（`-dontobfuscate` から始める等）は項目10に記録済み |
+| **8. BDオーサリング** | **保留** | 実装難易度が高い。BDAV生成手段の調査だけを単独タスクとして切り出すのは可 |
+| **9. denpa対応** | **保留** | 実装難易度が高く、上流へのAPI追加要望という外部依存もある |
+| **3. KonomiTVユーザー連携** | 保留 | JWT認証基盤の新設が必要（2026-09-08の判断を継続） |
+| **6. データ放送（BML）** | 保留 | フル実装は非推奨（同上） |
+
+---
+
+## 実施履歴（2026-09-27 〜 2026-10-27）
+
+`features/1.2.0-beta` にマージされたものの一覧。各項目の詳細は本文の該当セクションに記録してある。**着手方針で計画した項目のほかに、実機検証や Issue 対応の過程で見つかった不具合の修正が多く含まれる。**
+
+### 着手方針で計画した項目
+
+| PR | 項目 | 内容 |
+|---|---|---|
+| #116 | 11 | デコーダ対応状況の判別機構（Honorebi から移植、MPEG-2 / H.264 / AV1 判定とハードウェアデコーダー判別を追加） |
+| #118 | 10(b) | ライブ信号情報ポーリングをパネル表示中のみに限定 |
+| #119 | 1 | 「UI の大きさ」設定の新設（`LocalDensity` の上書き） |
+| #120 | 2 | AI コンシェルジュのキーワード自動予約。**EDCB の書き込み系コマンド6つが成功しても失敗と報告される不具合**も併せて発見・修正 |
+| #130 | 12 | フォーカス管理の段階0・1（共通ヘルパー `requestFocusWhenReady` / `requestFocusWhenPlaced` の追加、録画一覧の固定 `delay` を計1,000ms分削除）。あわせてサブメニューを閉じたときの点滅・バウンドを修正 |
+| #131 | 12 | フォーカス管理の段階2（ホーム画面の固定 `delay` を590ms分削除、迷子検知の即応化、全画面オーバーレイのフォーカス抑制の登録先を1箇所へ集約） |
+| #132 | 12 | ビデオタブのオーバーレイを閉じたとき開いたボタンへ復帰（設計方針 E）。ホーム画面の初回コンポーズでタブ列へ当てる3経路にガードを追加 |
+| #133 | — | #132 の取り込み（スタック PR のベースが自動で切り替わらず `features/1.2.0-beta` に届いていなかった） |
+| #134 | 12 | フォーカス管理の段階3（ライブ視聴の固定 `delay` を1,650ms分削除、素の `requestFocus()` と `try-catch` 7箇所を共通ヘルパーへ統一） |
+
+### 計画外（実機検証・Issue 対応で見つかった不具合）
+
+| PR | 内容 | 発見の経緯 |
+|---|---|---|
+| #117 | オープンソースライセンス画面のフォーカス脱出 | #116 の実機検証で同種の不具合に気づいた |
+| #121 | ライブ視聴中に他アプリへ移ると音声だけ鳴り続ける（`LivePlayerFactory` だけ `setAudioAttributes` の呼び出しが抜けていた） | 利用者からの報告 |
+| #122 | 「UI の大きさ」がダイアログに反映されない（Compose の `Dialog` 内で `LocalDensity` が再提供されるため） | #119 の実機検証 |
+| #123 | 初回起動時に初期設定の案内と同期エラーが重なる／同期エラーダイアログの操作性 | 利用者からの報告 |
+| #124 | 録画リストで `ix`-`ox` 以外のチャプターが認識されない、チャプターファイルの文字コード | Issue #79 のコメント |
+| #125 | `android.hardware.microphone` の `required="false"` 漏れ、軽量版 APK の選び方の案内 | Fire TV Stick 4K（第1世代）へインストールできないという報告 |
+| #128 | AI コンシェルジュのモデル呼び出しのフォールバック追加、Gemini のモデル名を `GeminiModels` へ集約、デッドコードの `AiNormalizationRepository` 削除 | AI コンシェルジュの調査 |
+| #129 | 音声入力で前回の録音データが送信される不具合（`stopRecording` が WAV 書き出しを待たずに返っていた）など録音まわり6点 | AI コンシェルジュの音声入力が使えないという報告 |
+
+### 外部コントリビュート
+
+| PR | 作者 | 内容 |
+|---|---|---|
+| #126 | [@sukiyaki](https://github.com/sukiyaki) | KonomiTV の H.265/HEVC 対応。画質設定とエンコード設定の分離、オリジナル画質からのフォールバック修正 |
+
+レビューでは KonomiTV 本体（`server/app/constants.py` の `QUALITY_TYPES`、`VideoStreamsRouter.py`）と突き合わせて仕様の一致を確認した。依頼した `isRawTs` のバックエンドごとの役割の明記は作者が対応済み（`dc0091c`）。`isEncodingSupported = false` の経路（EDCB / EPGStation / SMB）に回帰がないことは、`encoding.isRawTs` と `getKonomiTvValue` の全16箇所のガードを追って静的に確認した。
+
+### この期間で得られた知見（設計フェーズで使う）
+
+- **フォーカス問題は3パターンある**（方向キーでの移動 / 戻るキーの取りこぼし / プログラムからの `requestFocus()` による奪取）。対策手法が5通りに分散している。→ 項目12
+- **EDCB の独自 TCP プロトコルは KonomiTV の `CtrlCmdUtil.py` を照合基準にする。** 成否はレスポンスヘッダの `ret` のみで判定し、応答本体を読んではいけない。→ [`docs/architecture/edcb_protocol.md`](../architecture/edcb_protocol.md)
+- **Fire TV は全機種 32bit ABI**（SoC は64bit対応でも OS 側が32bit制限）。→ README に記載
+- **仕様書のない独自プロトコルや外部 API は、実装前に参照実装と照合する。** 推測で直すと検証の往復が増える（項目2の経緯が実例）。
+
+---
+
+## リリース時に案内が必要な事項
+
+**1.2.0 のリリース直前に、このセクションの文面をリリースノートへ転記すること。** 利用者側の操作や選択が必要な変更だけを対象にしている（内部実装の変更や単純な不具合修正は、通常のリリースノート項目として別途まとめる）。
+
+転記したら、該当項目に「転記済み」と追記して重複を防ぐ。
+
+### 1. KonomiTV の「オリジナル」画質がエンコード設定へ移動した（PR #126）
+
+**利用者の操作が必要。** 画質設定とエンコード設定を分離したため、これまで画質として「オリジナル (無変換)」を選んでいた設定は引き継がれない。
+
+#### リリースノート用の文面
+
+> **【重要】KonomiTV をお使いの方へ — 画質設定をご確認ください**
+>
+> H.265/HEVC への対応にあわせて、「オリジナル (無変換)」を**画質設定からエンコード設定へ分離**しました。
+>
+> これまで画質に「オリジナル (無変換)」を選んでいた場合、**更新後は自動的に引き継がれません。** 設定画面（再生設定）またはプレーヤーのサブメニューを開き、エンコード設定で「オリジナル (無変換)」を選び直してください。
+>
+> 選び直さないまま視聴すると H.264/AVC での再生になり、KonomiTV サーバー側で再エンコードが行われます。サーバーの負荷が上がったり、画質が変わって見えることがあります。
+>
+> なお H.265/HEVC を選ぶ場合は、KonomiTV サーバー側のエンコーダーが HEVC に対応している必要があります。
+
+#### 自動移行を実装しなかった理由（リリースノートには載せない）
+
+読み取り時に「画質が `original` ならエンコード設定へ読み替える」という移行は技術的には可能だが、**画質設定の値がエンコード設定の既定値を左右する隠れた依存**を作ることになる。設定のリセットや他の設定変更が絡んだ際に「なぜ `original` に戻るのか」を追いにくく、将来の不具合の原因になりうると判断して見送った（2026-10 にユーザーと合意）。
+
+### 2. 軽量版 APK は Fire TV では `armeabi-v7a` を選ぶ必要がある（PR #125）
+
+**利用者の選択が必要。** Fire TV Stick 4K（第1世代）へインストールできないという報告があり、原因は ABI の不一致だった。README には追記済みだが、リリースノートでも触れておくと同じ問い合わせを減らせる。
+
+#### リリースノート用の文面
+
+> **Fire TV をお使いの方へ — 軽量版は `armeabi-v7a` をお選びください**
+>
+> Fire TV シリーズ（Fire TV Stick / Stick 4K / Stick 4K Max / Fire TV Cube など）は、**世代や Fire OS のバージョンを問わず 32bit で動作します**（[Amazon の公式仕様](https://developer.amazon.com/docs/device-specs/device-specifications-fire-tv-streaming-media-player.html)）。軽量版をお使いの場合は `armeabi-v7a` 版を選んでください。`arm64-v8a` 版はインストールできません。
+>
+> Android TV / Google TV 搭載テレビは機種によって異なります。判断に迷う場合は、両方のアーキテクチャを含む **Universal 版**をご利用ください。
+
+### 3. CM 自動スキップの区間の作り方が変わった（PR #124）
+
+**操作は不要だが、挙動が変わるため記載する。** チャプターファイルのパーサを録画リスト側と SMB 側で共通化した際、ini 形式（`CHAPTER01=` 形式）の CM 区間の組み立て方が変わっている。
+
+#### リリースノート用の文面
+
+> **チャプター読み込みの改善**
+>
+> 録画リストからの再生で、CM 区間の境界以外の名前付きチャプターが認識されない問題を修正しました。あわせてチャプターファイルの文字コード（Shift_JIS / UTF-8、BOM の有無）を自動判別するようにし、SMB 再生と録画リストで同じチャプターが読めるようになりました。
+>
+> この変更にともない、ini 形式（`CHAPTER01=` 形式）のチャプターファイルを使っている場合、CM 自動スキップの区間の区切り方が変わることがあります。意図しない挙動があればご報告ください。
+
+### 追記するときの注意
+
+- 上記以外にも、**利用者の操作・選択が必要な変更**を入れた場合はこのセクションへ追記しておくこと。リリース直前にまとめて思い出すのは難しい。
+- 「背景」「実装しなかった理由」の部分はこのドキュメント内の記録用で、リリースノートへは転記しない。

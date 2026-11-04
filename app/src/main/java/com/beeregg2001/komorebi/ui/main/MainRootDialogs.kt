@@ -41,8 +41,10 @@ import com.beeregg2001.komorebi.util.AudioRecorderHelper
 import com.beeregg2001.komorebi.util.TitleNormalizer
 import com.beeregg2001.komorebi.util.UpdateState
 import com.beeregg2001.komorebi.viewmodel.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.OffsetDateTime
 
 @UnstableApi
@@ -61,7 +63,6 @@ fun MainRootDialogs(
     updateState: UpdateState,
     timeFormat: String,
     isSettingsInitialized: Boolean,
-    hasSyncError: Boolean,
     detailFocusRequester: FocusRequester,
     apiKey: String, // ★ 追加: 取得したAPIキーを受け取る
     onExitApp: () -> Unit,
@@ -84,6 +85,11 @@ fun MainRootDialogs(
     val audioRecorderHelper = remember { AudioRecorderHelper(context) }
     var isRecordingVoice by remember { mutableStateOf(false) }
 
+    // 録音中に画面が破棄された場合でもマイクを確実に解放する
+    DisposableEffect(audioRecorderHelper) {
+        onDispose { audioRecorderHelper.release() }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -94,22 +100,25 @@ fun MainRootDialogs(
 
     val stopRecordingAndSend = {
         if (isRecordingVoice) {
-            val file = audioRecorderHelper.stopRecording()
             isRecordingVoice = false
+            // stopRecording() はWAVの書き出し完了を待つ suspend 関数。
+            // 待たずにファイルを読むと前回の録音データを送ってしまうため、必ずコルーチン内で呼ぶ。
+            scope.launch {
+                val file = audioRecorderHelper.stopRecording()
+                if (file != null) {
+                    Log.i("AI_Concierge", "🎙️ 録音完了、Geminiに送信します (${file.length()} bytes)")
+                    val audioBytes = withContext(Dispatchers.IO) { file.readBytes() }
 
-            if (file != null && file.exists() && file.length() > 0) {
-                Log.i("AI_Concierge", "🎙️ 録音完了、Geminiに送信します (${file.length()} bytes)")
-                val audioBytes = file.readBytes()
-
-                aiConciergeViewModel.sendAudioWithContext(
-                    audioBytes = audioBytes,
-                    liveChannels = channelViewModel.groupedChannels.value,
-                    recentRecordings = recordViewModel.recentRecordings.value,
-                    groupedSeries = recordViewModel.groupedSeries.value,
-                    activeReserves = reserveViewModel.reserves.value
-                )
-            } else {
-                state.toastMessage = "音声が短すぎるか、録音できませんでした"
+                    aiConciergeViewModel.sendAudioWithContext(
+                        audioBytes = audioBytes,
+                        liveChannels = channelViewModel.groupedChannels.value,
+                        recentRecordings = recordViewModel.recentRecordings.value,
+                        groupedSeries = recordViewModel.groupedSeries.value,
+                        activeReserves = reserveViewModel.reserves.value
+                    )
+                } else {
+                    state.toastMessage = "音声が短すぎるか、録音できませんでした"
+                }
             }
         }
     }
@@ -118,13 +127,21 @@ fun MainRootDialogs(
     // ダイアログ & オーバーレイ UI
     // ========================================================================
 
-    if (hasSyncError) {
+    // 表示可否の判定は MainRootScreen 側で行い、ここでは結果だけを見る。
+    // 背面ツリーのフォーカス抑制が同じ値を参照する必要があるため。
+    if (state.isSyncErrorVisible) {
         val errorMessage = recordViewModel.syncProgress.value.error ?: "不明なエラー"
         SyncErrorDialog(
             errorMessage = errorMessage,
             onRetry = {
                 recordViewModel.clearSyncError()
                 recordViewModel.triggerSmartSync()
+            },
+            // 設定画面へ移動する際はエラーを消しておく。残したままだと設定画面を
+            // 閉じた直後に同じダイアログが再び出てしまう。
+            onGoToSettings = {
+                recordViewModel.clearSyncError()
+                state.isSettingsOpen = true
             },
             onDismiss = { recordViewModel.clearSyncError() }
         )
@@ -182,6 +199,7 @@ fun MainRootDialogs(
                     endHour = endH, endMinute = endM, excludeKeyword = exc, isTitleOnly = tOnly,
                     broadcastType = bType, isFuzzySearch = fuzzy, duplicateScope = dup,
                     priority = pri, isEventRelay = relay, isExactRecord = exact,
+                    onFailure = { state.toastMessage = it },
                     onSuccess = {
                         scope.launch {
                             state.selectedProgramForAutoReserve = null
@@ -245,7 +263,10 @@ fun MainRootDialogs(
                 }
             },
             onRecordClick = { program ->
-                reserveViewModel.addReserve(program.id) {
+                reserveViewModel.addReserve(
+                    programId = program.id,
+                    onFailure = { state.toastMessage = it }
+                ) {
                     scope.launch {
                         state.epgSelectedProgram = null; delay(300)
                         state.toastMessage = AppStrings.TOAST_RESERVED
@@ -296,6 +317,7 @@ fun MainRootDialogs(
                     priority = pri,
                     isEventRelay = relay,
                     isExactRecord = exact,
+                    onFailure = { state.toastMessage = it },
                     onSuccess = {
                         scope.launch {
                             state.epgSelectedProgram = null; delay(300)
@@ -324,8 +346,13 @@ fun MainRootDialogs(
             programTitle = state.editingReserveItem!!.program.title,
             initialSettings = state.editingReserveItem!!.recordSettings,
             isNewReservation = false,
+            isEpgStation = state.backendType == "EPGSTATION",
             onConfirm = { newSettings ->
-                reserveViewModel.updateReservation(state.editingReserveItem!!, newSettings) {
+                reserveViewModel.updateReservation(
+                    reserve = state.editingReserveItem!!,
+                    newSettings = newSettings,
+                    onFailure = { state.toastMessage = it }
+                ) {
                     scope.launch {
                         state.editingReserveItem = null; state.toastMessage =
                         AppStrings.TOAST_RESERVE_UPDATED
@@ -353,8 +380,13 @@ fun MainRootDialogs(
             programTitle = state.editingNewProgram!!.title,
             initialSettings = defaultSettings,
             isNewReservation = true,
+            isEpgStation = state.backendType == "EPGSTATION",
             onConfirm = { newSettings ->
-                reserveViewModel.addReserveWithSettings(state.editingNewProgram!!.id, newSettings) {
+                reserveViewModel.addReserveWithSettings(
+                    programId = state.editingNewProgram!!.id,
+                    settings = newSettings,
+                    onFailure = { state.toastMessage = it }
+                ) {
                     scope.launch {
                         state.editingNewProgram = null; state.epgSelectedProgram = null
                         delay(300); state.toastMessage = AppStrings.TOAST_RESERVED
@@ -377,7 +409,10 @@ fun MainRootDialogs(
             ),
             onConfirm = {
                 val id = state.reserveToDelete!!.id
-                reserveViewModel.deleteReservation(id) {
+                reserveViewModel.deleteReservation(
+                    reservationId = id,
+                    onFailure = { state.toastMessage = it }
+                ) {
                     scope.launch {
                         state.reserveToDelete = null
                         if (state.selectedReserve != null) state.selectedReserve = null

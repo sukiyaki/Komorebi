@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.util.UnstableApi
+import com.beeregg2001.komorebi.ColdStartDiag
 import com.beeregg2001.komorebi.ui.home.LoadingScreen
 import com.beeregg2001.komorebi.ui.live.LivePlayerScreen
 import com.beeregg2001.komorebi.ui.video.player.VideoPlayerScreen
@@ -253,7 +254,10 @@ fun MainRootScreen(
 
                 is AiConciergeAction.ReserveSingle -> {
                     closeAiConcierge(true)
-                    reserveViewModel.addReserve(action.programId) {
+                    reserveViewModel.addReserve(
+                        programId = action.programId,
+                        onFailure = { state.toastMessage = it }
+                    ) {
                         state.toastMessage = "番組の録画予約を完了しました"
                     }
                 }
@@ -272,12 +276,23 @@ fun MainRootScreen(
                         endMinute = 59,
                         excludeKeyword = "",
                         isTitleOnly = false,
-                        broadcastType = "GR,BS,BS4K,CS,SKY",
+                        // broadcast_type は「すべて / 無料のみ / 有料のみ」の3択で、
+                        // 放送波の種別を並べるフィールドではない。KonomiTV 側は
+                        // Literal['All', 'FreeOnly', 'PaidOnly'] のため、以前渡していた
+                        // "GR,BS,BS4K,CS,SKY" はバリデーションで弾かれて HTTP 422 になっていた
+                        // (EDCB 側は == "FreeOnly" / == "PaidOnly" の比較なので既定動作に落ちていた)。
+                        broadcastType = "All",
                         isFuzzySearch = true,
-                        duplicateScope = "SameTitle",
+                        // duplicate_title_check_scope も同様に3択
+                        // (None / SameChannelOnly / AllChannels)。"SameTitle" は不正値で、
+                        // KonomiTV では 422 の原因になっていた。EDCB 側の変換は
+                        // 「"None" 以外なら重複チェック有効」「"AllChannels" ならサービス横断」
+                        // なので、"SameChannelOnly" にすると従来の EDCB 挙動と一致する。
+                        duplicateScope = "SameChannelOnly",
                         priority = 3,
                         isEventRelay = true,
                         isExactRecord = true,
+                        onFailure = { state.toastMessage = it },
                         onSuccess = {
                             state.toastMessage = "「${action.keyword}」の自動録画条件を登録しました"
                         }
@@ -334,6 +349,17 @@ fun MainRootScreen(
     val hasSyncError by remember(recordViewModel) {
         recordViewModel.syncProgress.map { it.error != null }.distinctUntilChanged()
     }.collectAsState(initial = false)
+
+    // 同期エラーダイアログの表示可否はここで一元的に判定し、state 経由で共有する。
+    // ダイアログ本体(MainRootDialogs)の表示条件と、背面ツリーのフォーカス抑制
+    // (MainRootBackground の isBackgroundFocusBlocked / HomeLauncherScreen の
+    //  フォーカス迷子検知) が同じ値を見る必要があるため。
+    //
+    // 初期設定が未完了のうちは表示しない。接続先が無いのだから失敗して当然であり、
+    // 初回起動時に「初期設定が必要です」の案内と重なってしまう。
+    LaunchedEffect(hasSyncError, isSettingsInitialized) {
+        state.isSyncErrorVisible = hasSyncError && isSettingsInitialized
+    }
     val isEpgReady by epgViewModel.isInitialLoadComplete.collectAsState()
 
     val mirakurunIp by settingsViewModel.mirakurunIp.collectAsState(initial = "")
@@ -395,7 +421,8 @@ fun MainRootScreen(
         state.isSettingsOpen = false; state.isDataReady = false; state.isUiReady =
         false; state.showConnectionErrorDialog = false
         state.currentTabIndex = 0
-        channelViewModel.fetchChannels(); epgViewModel.preloadAllEpgData(); homeViewModel.refreshHomeData()
+        // 設定変更を確実に反映させるため、間引きを無視して更新する。
+        channelViewModel.fetchChannels(force = true); epgViewModel.preloadAllEpgData(); homeViewModel.refreshHomeData(force = true)
         recordViewModel.fetchRecentRecordings(forceRefresh = false); reserveViewModel.fetchReserves()
         state.settingsInitialCategoryIndex = 0
         state.settingsInitialFocusItemIndex = null
@@ -420,6 +447,14 @@ fun MainRootScreen(
                 null
 
             state.showDeleteConfirmDialog -> state.showDeleteConfirmDialog = false
+
+            // ★ 修正: 設定画面はプレイヤーより手前(MainRootDialogs)で画面全体を覆って描画される。
+            // プレイヤー系の分岐より後ろに置いていたため、ミニプレイヤー表示中に設定画面を開くと
+            // 戻るキーを押しても設定画面が閉じず、isMiniPlayerModeの解除→プレイヤーの終了…と
+            // 背面の状態だけが消化されてしまい、最後にはホーム画面の戻る処理まで到達して
+            // アプリ終了確認ダイアログが表示されていた。前面にあるものから閉じる順序へ修正する。
+            state.isSettingsOpen -> closeSettingsAndRefresh()
+
             state.isMiniPlayerMode -> {
                 state.isMiniPlayerMode = false; state.toastMessage = "フルスクリーンに戻りました"
             }
@@ -444,7 +479,6 @@ fun MainRootScreen(
                 state.isMiniPlayerMode = false
             }
 
-            state.isSettingsOpen -> closeSettingsAndRefresh()
             state.epgSelectedProgram != null -> state.epgSelectedProgram = null
             state.selectedReserve != null -> state.selectedReserve = null
             state.isEpgJumpMenuOpen -> state.isEpgJumpMenuOpen = false
@@ -469,28 +503,42 @@ fun MainRootScreen(
         }
     }
 
+    // 起動シーケンスの判定。
+    //
+    // 以前はここに delay(300) → delay(300)(または delay(500))が直列に積まれており、
+    // 「チャンネル一覧の取得が終わっているのに600ms何も起きない」時間が生まれていた。
+    // さらに下のLaunchedEffectはisEpgReady/isSettingsInitializedをキーに持つため、
+    // 番組表の初回読み込みが完了するたびにdelayがやり直され、待ち時間が伸びていた。
+    //
+    // isChannelLoadingはChannelViewModelの初期値がtrueで、取得完了時に一度だけ
+    // falseになる(取得の重複起動もChannelViewModel側で抑止済み)ため、
+    // この時点でチャンネル一覧・エラー状態はどちらも確定している。待つ必要はない。
     LaunchedEffect(isChannelLoading, isHomeLoading) {
         if (!isChannelLoading && !isHomeLoading) {
-            delay(300)
             if (isChannelError) {
                 state.showConnectionErrorDialog = true; state.isDataReady = false
             } else {
                 state.showConnectionErrorDialog = false; state.isDataReady = true
+                ColdStartDiag.mark("isDataReady=true (channel+home data loaded)")
             }
         }
     }
 
     LaunchedEffect(isEpgReady, state.isDataReady, isSettingsInitialized, state.currentTabIndex) {
         if (!isSettingsInitialized) {
-            delay(500); state.isSplashFinished = true
+            // 初期設定が未完了なら、セットアップ画面をできるだけ早く出す。
+            state.isSplashFinished = true
         } else if (state.currentTabIndex == tabs.indexOf("番組表")) {
             if (isEpgReady && state.isDataReady) {
-                delay(300); state.isSplashFinished = true
+                state.isSplashFinished = true
             }
         } else {
             if (state.isDataReady) {
-                delay(300); state.isSplashFinished = true
+                state.isSplashFinished = true
             }
+        }
+        if (state.isSplashFinished) {
+            ColdStartDiag.mark("isSplashFinished=true")
         }
     }
 
@@ -547,7 +595,7 @@ fun MainRootScreen(
             }
 
             val showMainContent =
-                isSystemReady && isSettingsInitialized && !state.showConnectionErrorDialog && !isSyncingInitial
+                isSystemReady && isSettingsInitialized && !state.showConnectionErrorDialog
 
             if (showMainContent) {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -739,7 +787,6 @@ fun MainRootScreen(
                 updateState = updateState,
                 timeFormat = timeFormat,
                 isSettingsInitialized = isSettingsInitialized,
-                hasSyncError = hasSyncError,
                 detailFocusRequester = detailFocusRequester,
                 apiKey = geminiApiKey,
                 onExitApp = onExitApp,
@@ -747,7 +794,12 @@ fun MainRootScreen(
                 closeAiConcierge = closeAiConcierge,
                 onGoToSettings = {
                     closeAiConcierge(true)
-                    state.settingsInitialCategoryIndex = 7
+                    // ★ 修正: Gemini APIキー設定は「ラボ設定」カテゴリ(SettingScreen.ktの
+                    // categories定義でインデックス8、itemFocusRequesters[8][2]がAPIキー項目)にあるが、
+                    // 番組表設定カテゴリの追加でカテゴリの並びがずれた後もここが7(コメント設定)の
+                    // ままだったため、「設定画面へ進む」ボタンから遷移すると無関係なコメント設定に
+                    // 着地していた。
+                    state.settingsInitialCategoryIndex = 8
                     state.settingsInitialFocusItemIndex = 2
                     state.isSettingsOpen = true
                 }
