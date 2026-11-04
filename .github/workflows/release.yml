@@ -92,6 +92,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Install CMake
+        run: sdkmanager --install "cmake;3.30.5"
+
       - name: Prepare fonts
         shell: bash
         run: |
