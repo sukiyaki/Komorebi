@@ -4,13 +4,14 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.util.UnstableApi
+import com.beeregg2001.komorebi.util.ChapterParser
 import com.beeregg2001.komorebi.data.SettingsRepository
 import com.beeregg2001.komorebi.data.model.ArchivedComment
 import com.beeregg2001.komorebi.data.model.CmSection
 import com.beeregg2001.komorebi.data.model.RecordedProgram
-import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.data.repository.RecordProvider
+import com.beeregg2001.komorebi.data.sync.RecordSyncEngine
 import com.beeregg2001.komorebi.data.repository.WatchHistoryRepository
 import com.beeregg2001.komorebi.ui.video.player.ChapterInfo
 import com.google.gson.Gson
@@ -33,7 +34,8 @@ import kotlinx.coroutines.CancellationException
 class VideoPlayerViewModel @Inject constructor(
     private val recordProvider: RecordProvider,
     private val historyRepository: WatchHistoryRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val recordSyncEngine: RecordSyncEngine
 ) : ViewModel() {
 
     companion object {
@@ -55,8 +57,12 @@ class VideoPlayerViewModel @Inject constructor(
     private val _externalChapters = MutableStateFlow<List<ChapterInfo>>(emptyList())
     val externalChapters: StateFlow<List<ChapterInfo>> = _externalChapters.asStateFlow()
 
-    private val _isLiveStream = MutableStateFlow(false)
-    val isLiveStream: StateFlow<Boolean> = _isLiveStream.asStateFlow()
+    // 再生 URL が「再生開始位置からのオフセット付き」かどうか。
+    // EDCB の xcode 疑似ライブ配信だけでなく、EPGStation のトランスコード再生
+    // (hls:N / mp4:N / webm:N) も、サーバー側で offsetSeconds 分シークした位置から
+    // 配信されるため、プレイヤーの currentPosition は「オフセット後の 0 起点」になる。
+    private val _isOffsetBasedStream = MutableStateFlow(false)
+    val isOffsetBasedStream: StateFlow<Boolean> = _isOffsetBasedStream.asStateFlow()
 
     private val _availableQualities =
         MutableStateFlow<List<StreamQuality>>(StreamQuality.DEFAULT_QUALITIES)
@@ -65,18 +71,49 @@ class VideoPlayerViewModel @Inject constructor(
     private val _isQualitiesLoaded = MutableStateFlow(false)
     val isQualitiesLoaded: StateFlow<Boolean> = _isQualitiesLoaded.asStateFlow()
 
-    private val _availableEncodings = MutableStateFlow(StreamEncoding.DEFAULT_ENCODINGS)
-    val availableEncodings: StateFlow<List<StreamEncoding>> = _availableEncodings.asStateFlow()
+    /**
+     * 「このバックエンドの画質としては有効だが、いま開いている録画番組に限って使えない」画質の値。
+     *
+     * ★ 追加: [availableQualities] から画質が除外される理由は2種類あり、区別が必要になった。
+     *  (A) バックエンドが変わって値空間そのものが変わった (例: KonomiTVの"1080p-60fps"のまま
+     *      EDCBへ切り替えた)。この場合は設定値が今後どの番組でも無効なので、再生時に
+     *      フォールバック先をVIDEO_QUALITYへ書き戻して正規化する必要がある(2c3d8c0の対応)。
+     *  (B) 値空間には存在するが、この録画番組の条件では使えない (KonomiTVのoriginal画質を
+     *      MPEG-4コンテナの録画で開いた場合など)。この場合に書き戻すと、対応番組へ戻っても
+     *      二度と既定画質に復帰しなくなるため、書き戻してはいけない。
+     * ここには(B)に該当する値だけを入れる。
+     */
+    private val _perProgramExcludedQualities = MutableStateFlow<Set<String>>(emptySet())
+    val perProgramExcludedQualities: StateFlow<Set<String>> =
+        _perProgramExcludedQualities.asStateFlow()
 
-    private val _isEncodingsLoaded = MutableStateFlow(true)
-    val isEncodingsLoaded: StateFlow<Boolean> = _isEncodingsLoaded.asStateFlow()
+    // 番組固有のエンコード除外も、画質と同様に保存設定を書き換えず再生時だけ反映する。
+    private val _perProgramExcludedEncodings = MutableStateFlow<Set<String>>(emptySet())
+    val perProgramExcludedEncodings: StateFlow<Set<String>> =
+        _perProgramExcludedEncodings.asStateFlow()
 
     private var detailFetchJob: Job? = null
     private var streamMaintenanceJob: Job? = null
 
-    fun fetchAvailableQualities() {
-        viewModelScope.launch(Dispatchers.IO) {
+    /**
+     * ★ 追加: 画質一覧取得の実行中ジョブ。
+     *
+     * この取得は [_perProgramExcludedQualities] という「いま開いている録画番組固有」の状態を
+     * 書くようになったため、前回分を打ち切らないと番組をまたいだ取り違えが起きる。
+     * 例: 番組A(MPEG-4コンテナ・API応答が遅い)を開いてすぐ戻り、番組B(MPEG-TS)を開くと、
+     * Bの結果が出た後にAの遅延応答が上書きし、Bなのにoriginalが選べなくなる。逆順に完了すると
+     * 非TS録画にoriginalが残り、ダウンロードAPIのレスポンスをVIDEO_MP2Tとして
+     * TsExtractorに渡して再生失敗する。[detailFetchJob] と同じくキャンセル方式で直列化する。
+     */
+    private var qualitiesFetchJob: Job? = null
+
+    fun fetchAvailableQualities(videoId: Int) {
+        qualitiesFetchJob?.cancel()
+        qualitiesFetchJob = viewModelScope.launch(Dispatchers.IO) {
             _isQualitiesLoaded.value = false
+            // 番組ごとの除外理由は番組を開くたびに再判定する(前の番組の判定を持ち越さない)
+            _perProgramExcludedQualities.value = emptySet()
+            _perProgramExcludedEncodings.value = emptySet()
             try {
                 val backend = settingsRepository.backendType.first()
                 if (backend == "EDCB") {
@@ -90,25 +127,110 @@ class VideoPlayerViewModel @Inject constructor(
                             )
                         )
                     } else {
-                        val json = settingsRepository.availableStreamQualities.first()
-                        if (json.isNotBlank()) {
-                            try {
-                                val type = object : TypeToken<List<StreamQuality>>() {}.type
-                                val list = gson.fromJson<List<StreamQuality>>(json, type)
-                                if (!list.isNullOrEmpty()) {
-                                    _availableQualities.value = list
-                                } else {
-                                    fetchFromApiAndSave()
+                        // ★ 修正(再修正): 以前はキャッシュ済みJSONを最優先し、キャッシュが空/不正な
+                        // 場合しかresolver.luaへ動的取得しに行かなかったため、EDCBサーバー側で
+                        // トランスコード(xcode)プロファイルの設定を変更しても、Komorebi側の設定
+                        // (IP/ポート/再生方式)を変更しない限りキャッシュが更新されず、
+                        // 「トランスコードを設定しても画質が動的に取得できない」不具合があった。
+                        //
+                        // そこで一度「常にresolver.luaへ動的取得し、失敗時のみキャッシュへ
+                        // フォールバック」に変更したが、これは再生開始のたびに毎回ネットワーク
+                        // 往復を待つ形になり、resolver.luaが遅い/不安定な環境では逆に
+                        // 「画質がオリジナルしか取得できない(取得失敗のフォールバックに
+                        // 落ちてしまう)」regressionを引き起こした。1.1.0-beta6まではキャッシュ
+                        // 優先で確実に動いていたため、キャッシュがあればまずそれを即座に反映して
+                        // 表示をブロックしないようにしつつ、裏で最新値を取得して更新する
+                        // (stale-while-revalidate)方式にする。
+                        val cached = readCachedQualities()
+                        if (!cached.isNullOrEmpty()) {
+                            // キャッシュがあれば即座に表示し、再生開始をブロックしない
+                            // (beta6までの挙動)。裏で最新値を取得し、取得できれば差し替える。
+                            _availableQualities.value = cached
+                            viewModelScope.launch(Dispatchers.IO) {
+                                try {
+                                    val fetched = recordProvider.getStreamQualities()
+                                    if (fetched.isNotEmpty()) {
+                                        settingsRepository.saveString(
+                                            SettingsRepository.AVAILABLE_STREAM_QUALITIES,
+                                            gson.toJson(fetched)
+                                        )
+                                        _availableQualities.value = fetched
+                                    }
+                                    // 空の場合は取得失敗とみなし、表示済みのキャッシュを維持する。
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Background quality refresh failed. Keeping cache.", e)
                                 }
-                            } catch (e: Exception) {
-                                fetchFromApiAndSave()
                             }
                         } else {
-                            fetchFromApiAndSave()
+                            // キャッシュが無い(初回起動等)場合のみ、最低限選べる状態にするため
+                            // 動的取得の完了を待つ。
+                            try {
+                                val fetched = recordProvider.getStreamQualities()
+                                if (fetched.isNotEmpty()) {
+                                    settingsRepository.saveString(
+                                        SettingsRepository.AVAILABLE_STREAM_QUALITIES,
+                                        gson.toJson(fetched)
+                                    )
+                                    _availableQualities.value = fetched
+                                } else {
+                                    useDefaultQuality()
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Initial quality fetch failed.", e)
+                                useDefaultQuality()
+                            }
                         }
                     }
                 } else if (backend == "KONOMITV") {
-                    _availableQualities.value = StreamQuality.DEFAULT_QUALITIES
+                    // ★ 修正: original画質(生MPEG-TS直接再生)の可否判定から映像コーデックの条件を外し、
+                    // 「録画完了済み・かつコンテナがMPEG-TS」のみで判定する。
+                    //
+                    // 以前は KonomiTV 本家(client/src/services/player/PlayerController.ts の
+                    // is_original_quality_available)をそのまま移植し、videoCodec == "MPEG-2" を
+                    // 要求していた。しかし本家がMPEG-2限定なのは、ブラウザがMPEG-2を再生できず
+                    // MPEG-2専用のWASMトランスコーダ(mpeg2toh264)を挟んでいるためで、
+                    // Komorebiには当てはまらない制約だった。Komorebiはtsreadex(NativeLib)経由で
+                    // Media3のTsExtractorへ渡す方式であり、servicefilter.cpp は H_262/AVC/H_265 を
+                    // 等しく映像として扱い、Media3も TS_STREAM_TYPE_H265(0x24) に対応している。
+                    //
+                    // この制限により、BS4K(dantto4K等でMMT/TLVからTSへ変換したHEVC録画)は
+                    // videoCodec == "H.265" となって常にoriginalが選べず、1080p(60fps)へ
+                    // フォールバックしていた。
+                    //
+                    // サーバー側の録画ダウンロードAPI(/api/videos/{id}/download)はコーデックを
+                    // 一切見ずファイルをそのまま返すため、緩和にあたってサーバー側の制約はない。
+                    //
+                    // 一覧画面のRoom DBキャッシュはcontainerFormatを保持していないため、
+                    // 必ずここでAPIから最新の詳細を取得して判定する。
+                    val isOriginalAvailable = recordProvider.getRecordedProgram(videoId)
+                        .getOrNull()
+                        ?.recordedVideo
+                        ?.let { video ->
+                            video.status != "Recording" &&
+                                video.containerFormat.equals("MPEG-TS", ignoreCase = true)
+                        } ?: false
+                    _availableQualities.value = if (isOriginalAvailable) {
+                        StreamQuality.DEFAULT_QUALITIES
+                    } else {
+                        // originalはKonomiTVの値空間には常に存在し、この録画番組でだけ使えない。
+                        // バックエンド切替由来の無効値と区別するため理由を記録する。
+                        _perProgramExcludedQualities.value = setOf("original")
+                        StreamQuality.DEFAULT_QUALITIES.filterNot { it.value == "original" }
+                    }
+                    if (!isOriginalAvailable) {
+                        _perProgramExcludedEncodings.value = setOf("original")
+                    }
+                } else if (backend == "EPGSTATION") {
+                    val qualities = recordProvider.getStreamQualities()
+                    _availableQualities.value = qualities.ifEmpty {
+                        listOf(
+                            StreamQuality(
+                                label = "そのまま再生 (無変換)",
+                                value = "direct",
+                                isRawTs = true
+                            )
+                        )
+                    }
                 } else {
                     _availableQualities.value = listOf(
                         StreamQuality(
@@ -134,37 +256,32 @@ class VideoPlayerViewModel @Inject constructor(
         }
     }
 
-    private suspend fun fetchFromApiAndSave() {
-        try {
-            Log.i(TAG, "Cache empty. Fetching qualities from API.")
-            val fetched = recordProvider.getStreamQualities()
-            if (fetched.isNotEmpty()) {
-                settingsRepository.saveString(
-                    SettingsRepository.AVAILABLE_STREAM_QUALITIES,
-                    gson.toJson(fetched)
-                )
-                _availableQualities.value = fetched
-            } else {
-                val currentVideo = settingsRepository.videoQuality.first()
-                _availableQualities.value = listOf(
-                    StreamQuality(
-                        label = "設定値 ($currentVideo)",
-                        value = currentVideo,
-                        isRawTs = false
-                    )
-                )
-            }
+    // EDCB(トランスコード)の画質キャッシュを読み出す。無ければ/壊れていればnullを返す。
+    private suspend fun readCachedQualities(): List<StreamQuality>? {
+        val json = settingsRepository.availableStreamQualities.first()
+        if (json.isBlank()) return null
+        return try {
+            val type = object : TypeToken<List<StreamQuality>>() {}.type
+            gson.fromJson<List<StreamQuality>>(json, type)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to fetch from API", e)
-            val currentVideo = settingsRepository.videoQuality.first()
-            _availableQualities.value = listOf(
-                StreamQuality(
-                    label = "設定値 ($currentVideo)",
-                    value = currentVideo,
-                    isRawTs = false
-                )
-            )
+            null
         }
+    }
+
+    // キャッシュも動的取得も両方失敗した場合の最終フォールバック。
+    private suspend fun useDefaultQuality() {
+        val currentVideo = settingsRepository.videoQuality.first()
+        _availableQualities.value = listOf(
+            StreamQuality(
+                label = "設定値 ($currentVideo)",
+                value = currentVideo,
+                isRawTs = false
+            )
+        )
+    }
+
+    fun setPlaybackSyncThrottle(enabled: Boolean) {
+        recordSyncEngine.setThrottled(enabled)
     }
 
     fun saveVideoQuality(qualityValue: String) {
@@ -173,8 +290,8 @@ class VideoPlayerViewModel @Inject constructor(
         }
     }
 
-    suspend fun saveVideoEncoding(encodingValue: String) {
-        settingsRepository.saveString(SettingsRepository.VIDEO_ENCODING, encodingValue)
+    suspend fun saveVideoEncoding(value: String) {
+        settingsRepository.saveString(SettingsRepository.VIDEO_ENCODING, value)
     }
 
     suspend fun resolveStreamUrl(
@@ -187,7 +304,12 @@ class VideoPlayerViewModel @Inject constructor(
             withContext(Dispatchers.IO) {
                 val url =
                     recordProvider.getRecordStreamUrl(videoId, quality, sessionId, offsetSeconds)
-                _isLiveStream.value = url.contains("/api/xcode") && quality != "10"
+                val isEdcbXcode = url.contains("/api/xcode") && quality != "10"
+                // EPGStation の direct 以外 (hls:N / mp4:N / webm:N) はサーバー側で
+                // offsetSeconds 分シークした位置から配信されるオフセット付きストリームになる。
+                val backend = settingsRepository.backendType.first()
+                val isEpgStationTranscoded = backend == "EPGSTATION" && quality != "direct"
+                _isOffsetBasedStream.value = isEdcbXcode || isEpgStationTranscoded
                 url
             }
         } catch (e: CancellationException) {
@@ -216,7 +338,20 @@ class VideoPlayerViewModel @Inject constructor(
 
                 val durationMs = (program.recordedVideo.duration * 1000).toLong()
                 val cmSections = program.recordedVideo.cmSections ?: emptyList()
-                _chapters.value = calculateChapters(durationMs, cmSections)
+
+                // ★ 修正: チャプターファイルが取得できていれば、そこから全チャプターを組み立てる。
+                // calculateChapters() は CM 区間からチャプターを逆算するため、本編中の
+                // 名前付きチャプターを表現できず、ix / ox の境界しか現れなかった(Issue #79)。
+                // チャプターファイルが無いバックエンド(KonomiTV など)では従来どおり逆算する。
+                val chapterText = program.recordedVideo.chapterText
+                val parsedChapters = if (!chapterText.isNullOrBlank()) {
+                    ChapterParser.parse(chapterText, program.recordedVideo.duration)
+                } else {
+                    emptyList()
+                }
+                _chapters.value = parsedChapters.ifEmpty {
+                    calculateChapters(durationMs, cmSections)
+                }
 
             }.onFailure { Log.e(TAG, "Failed to fetch program detail", it) }
         }
@@ -227,7 +362,7 @@ class VideoPlayerViewModel @Inject constructor(
         _tiledThumbnailUrl.value = null
         _chapters.value = emptyList()
         _externalChapters.value = emptyList() // ★ 追加: 外部チャプター情報もクリア
-        _isLiveStream.value = false
+        _isOffsetBasedStream.value = false
     }
 
     private fun calculateChapters(
@@ -304,6 +439,11 @@ class VideoPlayerViewModel @Inject constructor(
         currentPositionProvider: () -> Double
     ) {
         streamMaintenanceJob?.cancel()
+        // ★ 追加: KonomiTVのoriginal画質はHLS(VideoEncodingTask)のセッションを持たない単純な
+        // ファイルダウンロードのため、keep-alive API自体が存在しない(サーバー側は
+        // ValidateQualityで quality == 'original' を422で拒否する)。維持すべきセッションが
+        // ないので、無意味な失敗リクエストを4秒おきに送り続けないようループ自体を起動しない。
+        if (quality == "original") return
         streamMaintenanceJob = viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
@@ -328,6 +468,8 @@ class VideoPlayerViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopStreamMaintenance()
+        recordSyncEngine.setThrottled(false)
         detailFetchJob?.cancel()
+        qualitiesFetchJob?.cancel()
     }
 }

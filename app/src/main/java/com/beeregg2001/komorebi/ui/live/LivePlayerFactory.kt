@@ -3,7 +3,6 @@
 package com.beeregg2001.komorebi.ui.live
 
 import android.content.Context
-import android.util.Base64
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -40,16 +39,24 @@ class LivePlayerFactory @Inject constructor(
      *
      * @param audioOutputMode "PASSTHROUGH" などの音声出力モード設定
      * @param isKonomiTvSource KonomiTVソースかどうかの判定（字幕メタデータ抽出に使用）
-     * @param isSubtitleEnabled 現在字幕が有効かどうかの判定
-     * @param onSubtitleDataReceived 字幕データ（Base64）を受信した際のコールバック (pts, base64Data)
+     * @param onSubtitleDataReceived 字幕データを受信した際のコールバック (pts, rawData)
      * @param onError プレイヤーエラー発生時のコールバック
+     */
+    /**
+     * ライブ視聴用の ExoPlayer を生成する。
+     *
+     * @param handleAudioFocus 音声フォーカスを ExoPlayer に管理させるか。
+     *   true にすると、他アプリが音声フォーカスを取った時点で自動的に再生が止まる。
+     *   2画面同時視聴では2つのプレイヤーが同時に存在し、音声は片方の volume を 0 にして
+     *   切り替えているため、両方に管理させると互いにフォーカスを奪い合って意図せず
+     *   停止しうる。そのため副画面側は false で生成する。
      */
     fun createExoPlayer(
         audioOutputMode: String,
         isKonomiTvSource: () -> Boolean,
-        isSubtitleEnabled: () -> Boolean,
-        onSubtitleDataReceived: (Long, String) -> Unit,
-        onError: (PlaybackException) -> Unit
+        onSubtitleDataReceived: (Long, ByteArray) -> Unit,
+        onError: (PlaybackException) -> Unit,
+        handleAudioFocus: Boolean = true
     ): ExoPlayer {
 
         // 5.1ch音声などをステレオ（2ch）にダウンミックスするためのプロセッサ設定
@@ -117,6 +124,19 @@ class LivePlayerFactory @Inject constructor(
                 // 自動フレームレート変更をオフにする（カクつき防止）
                 setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
 
+                // 音声フォーカスを ExoPlayer に管理させる。
+                // これが無いと、ホーム/終了ボタンなどで他アプリ(テレビ放送アプリ等)へ移った際に
+                // ライフサイクルの停止処理が走らなかった場合、映像が見えないまま音声だけが
+                // 鳴り続けることがある。録画再生(VideoPlayerManager)と CustomPlayerManager には
+                // 以前から同じ設定が入っており、ライブ視聴だけが抜けていた。
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .setUsage(C.USAGE_MEDIA)
+                        .build(),
+                    handleAudioFocus
+                )
+
                 addListener(object : Player.Listener {
                     override fun onPlayerError(error: PlaybackException) {
                         onError(error)
@@ -124,7 +144,7 @@ class LivePlayerFactory @Inject constructor(
 
                     // KonomiTVソースの場合、ID3メタデータからARIB字幕データを抽出
                     override fun onMetadata(metadata: Metadata) {
-                        if (!isKonomiTvSource() || !isSubtitleEnabled()) return
+                        if (!isKonomiTvSource()) return
                         for (i in 0 until metadata.length()) {
                             val entry = metadata.get(i)
                             if (entry is PrivFrame && (entry.owner.contains(
@@ -132,11 +152,9 @@ class LivePlayerFactory @Inject constructor(
                                     true
                                 ) || entry.owner.contains("B24", true))
                             ) {
-                                val base64Data =
-                                    Base64.encodeToString(entry.privateData, Base64.NO_WRAP)
                                 val pts =
                                     currentPosition + LivePlayerConstants.SUBTITLE_SYNC_OFFSET_MS
-                                onSubtitleDataReceived(pts, base64Data)
+                                onSubtitleDataReceived(pts, entry.privateData)
                             }
                         }
                     }

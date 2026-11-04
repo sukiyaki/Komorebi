@@ -22,6 +22,7 @@ import com.beeregg2001.komorebi.common.AppStrings
 import com.beeregg2001.komorebi.data.model.StreamEncoding
 import com.beeregg2001.komorebi.data.model.StreamQuality
 import com.beeregg2001.komorebi.ui.theme.KomorebiTheme
+import com.beeregg2001.komorebi.util.UpdateState
 import com.beeregg2001.komorebi.viewmodel.PostRecordingBatch
 import com.beeregg2001.komorebi.viewmodel.SmbServer
 import java.time.LocalTime
@@ -58,6 +59,10 @@ fun GeneralSettingsContent(
     receiveBetaUpdates: Boolean,
     onToggleBetaUpdates: (Boolean) -> Unit,
     betaUpdateR: FocusRequester,
+    updateCheckState: UpdateState,
+    hasManuallyCheckedForUpdate: Boolean,
+    onCheckForUpdates: () -> Unit,
+    checkUpdateR: FocusRequester,
     onForceSync: () -> Unit,
     onClearChannel: () -> Unit,
     onClearHistory: () -> Unit,
@@ -91,9 +96,29 @@ fun GeneralSettingsContent(
                     .focusProperties {
                         left = sidebarR
                         up = FocusRequester.Cancel
-                        down = dbInfoR
+                        down = checkUpdateR
                     },
                 onClick = { onClick(betaUpdateR); onToggleBetaUpdates(!receiveBetaUpdates) }
+            )
+            SettingItem(
+                title = "アップデートを確認する",
+                value = when (updateCheckState) {
+                    is UpdateState.Checking -> "確認中..."
+                    is UpdateState.UpdateAvailable -> "新しいバージョンがあります: ${updateCheckState.versionName}"
+                    is UpdateState.Downloading -> "ダウンロード中... ${updateCheckState.progressPercentage}%"
+                    is UpdateState.ReadyToInstall -> "インストールの準備ができました"
+                    is UpdateState.Error -> updateCheckState.message
+                    UpdateState.Idle -> if (hasManuallyCheckedForUpdate) "最新バージョンです" else "手動で確認する"
+                },
+                icon = Icons.Default.Sync,
+                modifier = Modifier
+                    .focusRequester(checkUpdateR)
+                    .focusProperties {
+                        left = sidebarR
+                        up = betaUpdateR
+                        down = dbInfoR
+                    },
+                onClick = { onClick(checkUpdateR); onCheckForUpdates() }
             )
         }
 
@@ -106,7 +131,7 @@ fun GeneralSettingsContent(
                     .focusRequester(dbInfoR)
                     .focusProperties {
                         left = sidebarR
-                        up = betaUpdateR
+                        up = checkUpdateR
                         down = forceSyncR
                     },
                 onClick = { onClick(dbInfoR) }
@@ -305,6 +330,7 @@ fun ConnectionSettingsContent(
         SettingsSection("メインシステム設定") {
             val backendLabel = when (backendType) {
                 "EDCB" -> "EDCB (EpgTimerSrv)"
+                "EPGSTATION" -> "EPGStation"
                 "MIRAKURUN_ONLY" -> "Mirakurun (録画なし)"
                 else -> "KonomiTV"
             }
@@ -325,21 +351,25 @@ fun ConnectionSettingsContent(
 
             val currentIp = when (backendType) {
                 "EDCB" -> edcbIp
+                "EPGSTATION" -> epgStationIp
                 "MIRAKURUN_ONLY" -> mIp
                 else -> kIp
             }
             val currentPort = when (backendType) {
                 "EDCB" -> edcbPort
+                "EPGSTATION" -> epgStationPort
                 "MIRAKURUN_ONLY" -> mPort
                 else -> kPort
             }
             val ipTitle = when (backendType) {
                 "EDCB" -> "EDCB (IPアドレス)"
+                "EPGSTATION" -> "EPGStation (IPアドレス)"
                 "MIRAKURUN_ONLY" -> "Mirakurun (IPアドレス)"
                 else -> "KonomiTV (IPアドレス)"
             }
             val portTitle = when (backendType) {
                 "EDCB" -> "EDCB (TCPポート)"
+                "EPGSTATION" -> "EPGStation (ポート)"
                 "MIRAKURUN_ONLY" -> "Mirakurun (ポート)"
                 else -> "KonomiTV (ポート)"
             }
@@ -363,7 +393,12 @@ fun ConnectionSettingsContent(
                     .focusProperties {
                         left = sidebarR; up = backendIpR;
                         down =
-                            if (backendType == "EDCB") edcbHttpPortR else if (backendType == "KONOMITV") konomiBasicUsernameR else addSmbR
+                            when (backendType) {
+                                "EDCB" -> edcbHttpPortR
+                                "KONOMITV" -> konomiBasicUsernameR
+                                "EPGSTATION" -> prefSrcR
+                                else -> addSmbR
+                            }
                     },
                 onClick = { onClick(backendPortR); onEdit(portTitle, currentPort) }
             )
@@ -631,6 +666,7 @@ fun ConnectionSettingsContent(
 
 @Composable
 fun PlaybackSettingsContent(
+    isKonomiTv: Boolean,
     liveEncoding: String,
     liveQ: String,
     videoEncoding: String,
@@ -642,6 +678,10 @@ fun PlaybackSettingsContent(
     uiMode: String,
     autoCmSkip: String,
     availableQualities: List<StreamQuality>,
+    // ★ 追加: EPGStationはライブ・録画で画質の値空間が別なため、ライブ画質の表示ラベルは
+    // 専用のリストから引く(録画用availableQualitiesを流用すると常に不一致になり、
+    // 常に先頭項目のラベルが表示されてしまっていた)。
+    liveAvailableQualities: List<StreamQuality>,
     liveEncodingR: FocusRequester,
     liveR: FocusRequester,
     videoEncodingR: FocusRequester,
@@ -682,14 +722,15 @@ fun PlaybackSettingsContent(
                     .focusProperties {
                         left = sidebarR
                         up = FocusRequester.Cancel
-                        down = liveR
+                        down = if (isKonomiTv && liveEncoding == "original") videoEncodingR else liveR
                     },
                 onClick = { onClick(liveEncodingR); onLiveEncoding() })
             SettingItem(
                 AppStrings.SETTINGS_ITEM_LIVE_QUALITY,
-                availableQualities.find { it.value == liveQ }?.label
-                    ?: availableQualities.firstOrNull()?.label ?: "Unknown",
+                liveAvailableQualities.find { it.value == liveQ }?.label
+                    ?: liveAvailableQualities.firstOrNull()?.label ?: "Unknown",
                 Icons.Default.LiveTv,
+                enabled = !isKonomiTv || liveEncoding != "original",
                 modifier = Modifier
                     .focusRequester(liveR)
                     .focusProperties {
@@ -706,8 +747,8 @@ fun PlaybackSettingsContent(
                     .focusRequester(videoEncodingR)
                     .focusProperties {
                         left = sidebarR
-                        up = liveR
-                        down = videoR
+                        up = if (isKonomiTv && liveEncoding == "original") liveEncodingR else liveR
+                        down = if (isKonomiTv && videoEncoding == "original") liveSubR else videoR
                     },
                 onClick = { onClick(videoEncodingR); onVideoEncoding() })
             SettingItem(
@@ -715,6 +756,7 @@ fun PlaybackSettingsContent(
                 availableQualities.find { it.value == videoQ }?.label
                     ?: availableQualities.firstOrNull()?.label ?: "Unknown",
                 Icons.Default.VideoFile,
+                enabled = !isKonomiTv || videoEncoding != "original",
                 modifier = Modifier
                     .focusRequester(videoR)
                     .focusProperties {
@@ -733,7 +775,7 @@ fun PlaybackSettingsContent(
                     .focusRequester(liveSubR)
                     .focusProperties {
                         left = sidebarR
-                        up = videoR
+                        up = if (isKonomiTv && videoEncoding == "original") videoEncodingR else videoR
                         down = videoSubR
                     },
                 onClick = { onClick(liveSubR); onLiveSub() })
@@ -1030,8 +1072,10 @@ fun DisplaySettingsContent(
     onEditDefaultView: () -> Unit,
     onEditTimeFormat: () -> Unit,
     onToggleHideSubChannels: () -> Unit,
+    onEditUiScale: () -> Unit,
     itemRs: List<FocusRequester>,
     hideSubChannelsR: FocusRequester,
+    uiScaleR: FocusRequester,
     onClick: (FocusRequester) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -1103,10 +1147,22 @@ fun DisplaySettingsContent(
                     .focusProperties {
                         left = sidebarR
                         up = itemRs[3]
-                        down = FocusRequester.Cancel
+                        down = uiScaleR
                     },
                 onClick = { onClick(hideSubChannelsR); onToggleHideSubChannels() }
             )
+            SettingItem(
+                AppStrings.SETTINGS_ITEM_UI_SCALE,
+                uiScaleLabel(preferences.uiScale),
+                Icons.Default.FormatSize,
+                modifier = Modifier
+                    .focusRequester(uiScaleR)
+                    .focusProperties {
+                        left = sidebarR
+                        up = hideSubChannelsR
+                        down = FocusRequester.Cancel
+                    },
+                onClick = { onClick(uiScaleR); onEditUiScale() })
         }
     }
 }
@@ -1306,8 +1362,10 @@ fun LabSettingsContent(
 
 @Composable
 fun AppInfoContent(
-    onShow: () -> Unit,
+    onShowLicenses: () -> Unit,
+    onShowDeviceCapabilities: () -> Unit,
     licR: FocusRequester,
+    capR: FocusRequester,
     sidebarR: FocusRequester,
     onClick: (FocusRequester) -> Unit
 ) {
@@ -1329,6 +1387,20 @@ fun AppInfoContent(
         )
         Spacer(Modifier.height(48.dp))
         SettingItem(
+            AppStrings.SETTINGS_ITEM_DEVICE_CAPABILITIES,
+            "",
+            Icons.Default.Memory,
+            modifier = Modifier
+                .width(400.dp)
+                .focusRequester(capR)
+                .focusProperties {
+                    left = sidebarR
+                    up = FocusRequester.Cancel
+                    down = licR
+                },
+            onClick = { onClick(capR); onShowDeviceCapabilities() })
+        Spacer(Modifier.height(16.dp))
+        SettingItem(
             AppStrings.SETTINGS_ITEM_OSS_LICENSES,
             "",
             Icons.Default.Info,
@@ -1337,9 +1409,26 @@ fun AppInfoContent(
                 .focusRequester(licR)
                 .focusProperties {
                     left = sidebarR
-                    up = FocusRequester.Cancel
+                    up = capR
                     down = FocusRequester.Cancel
                 },
-            onClick = { onClick(licR); onShow() })
+            onClick = { onClick(licR); onShowLicenses() })
     }
 }
+
+/**
+ * UI の大きさ（[SettingsRepository.UI_SCALE]）の倍率文字列を表示用のラベルへ変換する。
+ * 1.0 未満にすると UI 全体が小さくなり、画面に入る情報量が増える。
+ */
+internal fun uiScaleLabel(value: String): String = when (value) {
+    "1.1" -> "大きめ (110%)"
+    "0.9" -> "小さめ (90%)"
+    "0.8" -> "特小 (80%)"
+    "0.75" -> "最小 (75%)"
+    else -> "標準 (100%)"
+}
+
+/** 設定画面の選択ダイアログに出す「UI の大きさ」の選択肢。 */
+internal val UI_SCALE_OPTIONS: List<Pair<String, String>> = listOf(
+    "1.1", "1.0", "0.9", "0.8", "0.75"
+).map { uiScaleLabel(it) to it }

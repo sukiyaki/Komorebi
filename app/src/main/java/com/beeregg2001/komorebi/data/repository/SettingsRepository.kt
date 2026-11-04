@@ -2,12 +2,12 @@ package com.beeregg2001.komorebi.data
 
 import android.content.Context
 import android.util.Log
+import com.beeregg2001.komorebi.common.UrlBuilder
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
-import com.beeregg2001.komorebi.data.model.StreamEncoding
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -38,6 +38,19 @@ class SettingsRepository @Inject constructor(
         val KONOMI_BASIC_PASSWORD = stringPreferencesKey("konomi_basic_password")
         val MIRAKURUN_IP = stringPreferencesKey("mirakurun_ip")
         val MIRAKURUN_PORT = stringPreferencesKey("mirakurun_port")
+
+        /**
+         * ★ 追加: これらのキーが更新されたら局ロゴ URL の共有キャッシュを破棄する。
+         * バックエンド種別と各接続先(IP/ポート)が URL の決定要素になっているため。
+         */
+        val LOGO_URL_AFFECTING_KEYS = setOf(
+            BACKEND_TYPE,
+            EDCB_IP, EDCB_PORT, EDCB_HTTP_PORT,
+            EPGSTATION_IP, EPGSTATION_PORT,
+            KONOMI_IP, KONOMI_PORT,
+            MIRAKURUN_IP, MIRAKURUN_PORT
+        )
+
         val PREFERRED_STREAM_SOURCE = stringPreferencesKey("preferred_stream_source")
         val COMMENT_SPEED = stringPreferencesKey("comment_speed")
         val COMMENT_FONT_SIZE = stringPreferencesKey("comment_font_size")
@@ -86,6 +99,11 @@ class SettingsRepository @Inject constructor(
         // ★ 追加: 番組表の設定キー
         val EPG_COLUMN_COUNT = stringPreferencesKey("epg_column_count")
         val EPG_FONT_SIZE_SCALE = stringPreferencesKey("epg_font_size_scale")
+
+        // UI 全体の大きさ。LocalDensity の density をこの倍率で上書きすることで、
+        // 文字サイズと余白を含めた UI 全体を縮小し、画面に入る情報量を増やす。
+        // 値は倍率の文字列("1.0" = 標準)。1.0 未満にすると UI が小さくなる。
+        val UI_SCALE = stringPreferencesKey("ui_scale")
         val EPG_VISIBLE_HOURS = stringPreferencesKey("epg_visible_hours")
 
         // ★ 追加: Cloudflare Zero Trust (Cloudflare Access) サービストークン
@@ -187,13 +205,10 @@ class SettingsRepository @Inject constructor(
     val commentMaxLines: Flow<String> = context.dataStore.data.map { it[COMMENT_MAX_LINES] ?: "0" }
     val commentDefaultDisplay: Flow<String> =
         context.dataStore.data.map { it[COMMENT_DEFAULT_DISPLAY] ?: "ON" }
-    val liveEncoding: Flow<String> = context.dataStore.data.map {
-        StreamEncoding.fromValue(it[LIVE_ENCODING] ?: StreamEncoding.DEFAULT_VALUE).value
-    }
+    val liveEncoding: Flow<String> = context.dataStore.data.map { it[LIVE_ENCODING] ?: "h264" }
     val liveQuality: Flow<String> = context.dataStore.data.map { it[LIVE_QUALITY] ?: "1080p" }
-    val videoEncoding: Flow<String> = context.dataStore.data.map {
-        StreamEncoding.fromValue(it[VIDEO_ENCODING] ?: StreamEncoding.DEFAULT_VALUE).value
-    }
+    val videoEncoding: Flow<String> =
+        context.dataStore.data.map { it[VIDEO_ENCODING] ?: "h264" }
     val videoQuality: Flow<String> =
         context.dataStore.data.map { it[VIDEO_QUALITY] ?: "1080p" }
     val liveSubtitleDefault: Flow<String> =
@@ -249,6 +264,7 @@ class SettingsRepository @Inject constructor(
     // ★ 追加: 番組表設定の読み込み (デフォルト: 7ch, 等倍サイズ)
     val epgColumnCount: Flow<String> = context.dataStore.data.map { it[EPG_COLUMN_COUNT] ?: "7" }
     val epgFontSizeScale: Flow<String> = context.dataStore.data.map { it[EPG_FONT_SIZE_SCALE] ?: "1.0" }
+    val uiScale: Flow<String> = context.dataStore.data.map { it[UI_SCALE] ?: "1.0" }
     val epgVisibleHours: Flow<String> = context.dataStore.data.map { it[EPG_VISIBLE_HOURS] ?: "6" }
 
     // ★ 追加: Cloudflare Zero Trust サービストークンのFlow
@@ -262,6 +278,14 @@ class SettingsRepository @Inject constructor(
         value: String
     ) {
         context.dataStore.edit { settings -> settings[key] = value }
+        // ★ 最適化に伴う整合性維持: 接続先が変わると局ロゴ URL も変わるため、
+        //   共有 URL キャッシュを破棄して古い URL を返さないようにする。
+        if (key in LOGO_URL_AFFECTING_KEYS) {
+            ChannelLogoUrlCache.clear()
+            // ★ 追加: 接続先が変われば KonomiTV の Original画質(ライブ)対応状況も
+            //   変わりうるため、旧接続先で確認した「非対応」判定を持ち越さない
+            KonomiOriginalQualityGate.reset()
+        }
     }
 
     suspend fun saveBoolean(
@@ -290,6 +314,11 @@ class SettingsRepository @Inject constructor(
                 ip = prefs[EDCB_IP] ?: ""
                 port = prefs[EDCB_PORT] ?: "4510"
             }
+
+            com.beeregg2001.komorebi.data.model.StreamSource.EPGSTATION -> {
+                ip = prefs[EPGSTATION_IP] ?: ""
+                port = prefs[EPGSTATION_PORT] ?: "8888"
+            }
         }
         if (!ip.startsWith("http://") && !ip.startsWith("https://")) {
             ip = "http://$ip"
@@ -297,18 +326,29 @@ class SettingsRepository @Inject constructor(
         return "$ip:$port"
     }
 
+    // ★ 修正: 以前は素朴な文字列連結("$ip:$port"等)で組み立てており、
+    // スキーム付きURL・末尾スラッシュ付き・ポート込みURLを入力すると不正なURL
+    // (例: "https://example.com/:5510"、ポート重複、パスへのポート混入)になっていた。
+    // EPGStation側は既にUrlBuilder.formatBaseUrl()でこれらを正しく処理しているため、
+    // EDCBも同じ関数に統一する(SSL自動判定のヒューリスティックはそのまま維持)。
     suspend fun getEdcbFullUrl(): String {
         val prefs = context.dataStore.data.first()
-        var ip = prefs[EDCB_IP] ?: ""
+        val ip = prefs[EDCB_IP] ?: ""
         val port = prefs[EDCB_HTTP_PORT] ?: "5510"
-        if (ip.isEmpty()) return ""
-
-        if (ip.startsWith("http://") || ip.startsWith("https://")) return "$ip:$port"
+        if (ip.isBlank()) return ""
 
         val isSsl = port == "5511" || port.endsWith("s")
-        val scheme = if (isSsl) "https://" else "http://"
+        val defaultProtocol = if (isSsl) "https" else "http"
 
-        return "$scheme$ip:$port"
+        return UrlBuilder.formatBaseUrl(ip, port, defaultProtocol)
+    }
+
+    suspend fun getEpgStationFullUrl(): String {
+        val prefs = context.dataStore.data.first()
+        val ip = prefs[EPGSTATION_IP] ?: ""
+        val port = prefs[EPGSTATION_PORT] ?: "8888"
+        if (ip.isBlank()) return ""
+        return UrlBuilder.formatBaseUrl(ip, port, "http")
     }
 
     // ★ 追加: Cloudflare Access サービストークンをヘッダーMapとして取得 (未設定なら空Map)
@@ -375,6 +415,10 @@ class SettingsRepository @Inject constructor(
 
             com.beeregg2001.komorebi.data.model.StreamSource.EDCB -> com.beeregg2001.komorebi.data.model.BackendConfig.Edcb(
                 ip = prefs[EDCB_IP] ?: "", port = prefs[EDCB_PORT] ?: "4510"
+            )
+
+            com.beeregg2001.komorebi.data.model.StreamSource.EPGSTATION -> com.beeregg2001.komorebi.data.model.BackendConfig.EpgStation(
+                ip = prefs[EPGSTATION_IP] ?: "", port = prefs[EPGSTATION_PORT] ?: "8888"
             )
         }
     }

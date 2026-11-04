@@ -112,6 +112,12 @@ fun RecordListItem(
     }
 
     val channelName = program.channel?.name ?: ""
+    // 番組名は常に残しつつ、EPGStation から取れたサブタイトルがあれば後ろに補足する。
+    // (話数はもともと番組名に含まれていることが多いため、重複する場合は付け足さない)
+    val displayTitle = program.episodeTitle
+        ?.takeIf { it.isNotBlank() && !program.title.contains(it) }
+        ?.let { "${program.title}　${it}" }
+        ?: program.title
 
     Surface(
         onClick = { if (isAnalyzed) onClick() },
@@ -122,7 +128,13 @@ fun RecordListItem(
             .onFocusChanged { isFocused = it.isFocused }
             .alpha(if (isAnalyzed) 1f else 0.5f),
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(4.dp)),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.02f),
+        // 疑似ハイライト(isPersistentFocused)中も拡大状態を保つ。素のままだと
+        // 実フォーカス時だけ 1.02 倍になるため、メニューを開閉するたびに
+        // 1.00 ⇔ 1.02 の拡大アニメーションが走って項目が揺れて見える。
+        scale = ClickableSurfaceDefaults.scale(
+            scale = if (isPersistentFocused) 1.02f else 1f,
+            focusedScale = 1.02f
+        ),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (isVisualFocused) colors.textPrimary else Color.Transparent,
             focusedContainerColor = colors.textPrimary,
@@ -209,7 +221,7 @@ fun RecordListItem(
                 verticalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = program.title,
+                    text = displayTitle,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,

@@ -13,6 +13,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -58,16 +60,49 @@ fun MainRootBackground(
     val scope = rememberCoroutineScope()
     val colors = KomorebiTheme.colors
 
-    // ★ 修正: SMBアイテムが選択されている場合も背面を非表示（ホームレイヤー維持）にする
-    val showHomeLayer =
-        (state.selectedChannel == null && state.selectedProgram == null && state.selectedSmbItem == null) || state.isMiniPlayerMode
+    // プレイヤー表示中も背面画面をComposeツリーに保持する。
+    // 画面を破棄するとLazyList/LazyGridのスクロール位置とFocusRequesterが失われ、
+    // 戻る操作で先頭項目へフォーカスが戻ってしまう。
+    val isFullScreenPlayerVisible =
+        !state.isMiniPlayerMode &&
+            (state.selectedChannel != null || state.selectedProgram != null || state.selectedSmbItem != null)
 
-    if (showHomeLayer) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(0f)
-        ) {
+    // 前面オーバーレイ(設定画面・AIコンシェルジュ・同期エラーダイアログ。いずれも
+    // MainRootDialogs側で描画される)が出ている間は、背面ツリーを操作できてはいけない。
+    // 漏れると背面のホーム画面がフォーカス可能なまま残り、ホーム側の「フォーカス迷子検知」が
+    // オーバーレイからフォーカスを奪い返して、表示されたままキー操作だけ背面に効く
+    // 操作不能状態になる。特にミニプレイヤー表示中は isFullScreenPlayerVisible が false に
+    // なるため、オーバーレイ側の判定が無いと素通りしてしまう。
+    //
+    // 対象の列挙は MainRootState.isForegroundOverlayVisible に一元化している
+    // (こことホーム画面の2箇所へ別々に登録する形は登録漏れが再発するため廃止した)。
+    val isBackgroundFocusBlocked =
+        isFullScreenPlayerVisible || state.isForegroundOverlayVisible
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(0f)
+            // フルスクリーンのプレイヤー表示中は、背面ツリーへフォーカスが入り込まないよう完全に封鎖する。
+            //
+            // focusProperties { canFocus = false } だけでは不十分。Composeはフォーカス対象ノードが
+            // 自身の親をさかのぼる際「最初に見つかったフォーカス対象ノード」で打ち切って
+            // focusPropertiesを収集するため、間にLazyList等のfocusGroupが挟まる深い階層の項目
+            // (ホームのチャンネルカード等)にはcanFocus=falseが一切届かず、フォーカス可能なまま残る。
+            // 実際、プレイヤー側のフォーカスノードが破棄された(サブメニューを閉じた・二画面へ切り替えた等)
+            // タイミングでAndroidがフォーカスを再探索すると、背面ホーム画面の項目が選ばれてしまい、
+            // 「十字キーが無反応・決定キーだけ背面の項目に効く」という操作不能状態になっていた。
+            //
+            // onEnter { cancelFocusChange() } を持つフォーカスグループ(canFocus=false + focusTarget)に
+            // することで、このBox配下へのフォーカス侵入をフォーカス探索・明示的なrequestFocusの両方で拒否する。
+            .focusProperties {
+                canFocus = false
+                if (isBackgroundFocusBlocked) {
+                    onEnter = { cancelFocusChange() }
+                }
+            }
+            .focusTarget()
+    ) {
             when {
                 state.isRecordListOpen -> {
                     RecordListScreen(
@@ -169,6 +204,7 @@ fun MainRootBackground(
                                 priority = pri,
                                 isEventRelay = relay,
                                 isExactRecord = exact,
+                                onFailure = { state.toastMessage = it },
                                 onSuccess = {
                                     scope.launch {
                                         state.editingCondition = null
@@ -181,6 +217,7 @@ fun MainRootBackground(
                         onConfirmDelete = { deleteRelated ->
                             reserveViewModel.deleteConditionWithCleanup(
                                 condition = currentCondition, deleteRelatedReserves = deleteRelated,
+                                onFailure = { state.toastMessage = it },
                                 onSuccess = {
                                     scope.launch {
                                         state.editingCondition = null
@@ -285,12 +322,20 @@ fun MainRootBackground(
                         hasActivePlayer = state.isMiniPlayerMode,
                         onReturnToPlayerClick = { state.isMiniPlayerMode = false },
                         aiFocusReturnTick = state.aiFocusReturnTick,
-                        onAiReturnConsumed = { state.aiFocusReturnTick = 0 }
+                        onAiReturnConsumed = { state.aiFocusReturnTick = 0 },
+                        // ★ 追加: AIコンシェルジュパネル表示中はフォーカス自動復帰・戻るキー処理を止める
+                        isAiConciergeOpen = state.isAiConciergeOpen,
+                        isForegroundOverlayVisible = state.isForegroundOverlayVisible,
+                        // プレイヤー表示中はホーム画面が見えないため、定期取得を止めさせる
+                        isPlayerActiveFullScreen = isFullScreenPlayerVisible
                     )
                 }
             }
 
-            if (state.selectedChannel == null && state.selectedProgram == null && !isSyncingInitial) {
+            // ★ 修正: SyncProgressIndicator自身がsyncProgress.isSyncingで表示制御しているため、
+            // ここで!isSyncingInitialを条件に含めると、初回同期を待たずにメイン画面を表示するようになった後
+            // (isSyncingInitial=trueのまま操作可能な間)は進捗表示が一切出なくなってしまう。
+            if (state.selectedChannel == null && state.selectedProgram == null) {
                 SyncProgressIndicator(
                     recordViewModel = recordViewModel,
                     modifier = Modifier
@@ -298,6 +343,5 @@ fun MainRootBackground(
                         .padding(end = 40.dp, bottom = 40.dp)
                 )
             }
-        }
     }
 }

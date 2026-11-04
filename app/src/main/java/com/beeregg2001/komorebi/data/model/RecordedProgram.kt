@@ -25,7 +25,12 @@ data class RecordedProgram(
     val playbackPosition: Double = 0.0,
     // ★ ここから下の2行を追加するだけです ★
     val directThumbnailUrl: String? = null,
-    val apiThumbnailUrl: String? = null
+    val apiThumbnailUrl: String? = null,
+    val seriesId: Int? = null,
+    val episodeNumber: Double? = null,
+    val episodeLabel: String? = null,
+    val episodeTitle: String? = null,
+    val airType: String? = null
 )
 
 // CM区間（チャプター）のデータモデル
@@ -56,7 +61,15 @@ data class RecordedVideo(
     @SerializedName("audio_codec") val audioCodec: String,
     @SerializedName("has_key_frames") val hasKeyFrames: Boolean? = true,
     @SerializedName("thumbnail_info") val thumbnailInfo: ThumbnailInfo? = null,
-    @SerializedName("cm_sections") val cmSections: List<CmSection>? = null
+    @SerializedName("cm_sections") val cmSections: List<CmSection>? = null,
+    /**
+     * 外部チャプターファイルの中身。取得できた場合のみ入る。
+     *
+     * ここに生のテキストを持たせているのは、CM区間([cmSections])だけでは本編中の
+     * 名前付きチャプターを表現できないため。再生時に ChapterParser で解釈する。
+     * サーバーのレスポンスには含まれないローカル専用の値なので SerializedName は付けない。
+     */
+    val chapterText: String? = null
 )
 
 data class ThumbnailInfo(

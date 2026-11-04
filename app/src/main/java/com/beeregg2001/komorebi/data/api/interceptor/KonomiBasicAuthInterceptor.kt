@@ -1,5 +1,6 @@
 package com.beeregg2001.komorebi.data.api.interceptor
 
+import com.beeregg2001.komorebi.common.UrlBuilder
 import com.beeregg2001.komorebi.data.SettingsRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -25,11 +26,7 @@ class KonomiBasicAuthInterceptor @Inject constructor(
         val konomiBaseUrl = runBlocking {
             val ip = settingsRepository.konomiIp.first()
             val port = settingsRepository.konomiPort.first()
-            if (ip.startsWith("http://") || ip.startsWith("https://")) {
-                "$ip:$port"
-            } else {
-                "http://$ip:$port"
-            }
+            UrlBuilder.formatBaseUrl(ip, port, "http")
         }.toHttpUrlOrNull()
 
         if (
