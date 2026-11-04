@@ -94,7 +94,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Install CMake
-        run: sdkmanager --install "cmake;3.30.5"
+        run: |
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install "cmake;3.30.5"
+          "${ANDROID_HOME}/cmake/3.30.5/bin/cmake" --version
 
       - name: Prepare fonts
         shell: bash
